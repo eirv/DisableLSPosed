@@ -2,6 +2,7 @@ package io.github.eirv.disablelsposed;
 
 import android.app.ActionBar;
 import android.app.Activity;
+import android.os.Build;
 import android.os.Bundle;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -40,6 +41,9 @@ public class MainActivity extends Activity {
         TextView textView = new TextView(this);
         textView.setTextIsSelectable(true);
         textView.setText(sb.toString());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            textView.setFitsSystemWindows(true);
+        }
         scrollView.addView(textView, ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.MATCH_PARENT);
         setContentView(scrollView);
     }

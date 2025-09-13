@@ -9,10 +9,9 @@ android {
     defaultConfig {
         applicationId = "io.github.eirv.disablelsposed"
         minSdk = 33
-        //noinspection OldTargetApi
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        targetSdk = 35
+        versionCode = 2
+        versionName = "1.1"
 
         externalNativeBuild {
             cmake {

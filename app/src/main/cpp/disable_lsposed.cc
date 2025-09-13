@@ -12,9 +12,191 @@
 
 using namespace std::string_literals;
 
-static std::vector<std::string> unhooked_methods_;
-static bool is_lsposed_disabled_ = false;
-static bool is_art_restored_ = false;
+static std::vector<std::string> unhooked_methods_{};
+static bool is_lsposed_disabled_{};
+static bool is_art_restored_{};
+
+class XposedCallbackHelper {
+ public:
+  explicit XposedCallbackHelper(JNIEnv* env) : env_{env} {
+    class_cls_ = env_->FindClass("java/lang/Class");
+    field_cls_ = env_->FindClass("java/lang/reflect/Field");
+    collection_cls_ = env_->FindClass("java/util/Collection");
+
+    key_set_view_cls_ = env_->FindClass("java/util/concurrent/ConcurrentHashMap$KeySetView");
+    env_->ExceptionClear();
+
+    class_getDeclaredFields_ = env_->GetMethodID(class_cls_, "getDeclaredFields", "()[Ljava/lang/reflect/Field;");
+    class_getSimpleName_ = env_->GetMethodID(class_cls_, "getSimpleName", "()Ljava/lang/String;");
+    class_getInterfaces_ = env_->GetMethodID(class_cls_, "getInterfaces", "()[Ljava/lang/Class;");
+    field_setAccessible_ = env_->GetMethodID(field_cls_, "setAccessible", "(Z)V");
+    field_get_ = env_->GetMethodID(field_cls_, "get", "(Ljava/lang/Object;)Ljava/lang/Object;");
+    field_getModifiers_ = env_->GetMethodID(field_cls_, "getModifiers", "()I");
+    collection_clear_ = env_->GetMethodID(collection_cls_, "clear", "()V");
+  }
+
+  void ClearXposedCallbacks(jclass cls) {
+    if (legacy_callbacks_cleared_ && modern_callbacks_cleared_) return;
+
+    auto simple_name = reinterpret_cast<jstring>(env_->CallObjectMethod(cls, class_getSimpleName_));
+    if (env_->ExceptionCheck()) {
+      env_->ExceptionClear();
+      return;
+    }
+    auto name_chars = env_->GetStringUTFChars(simple_name, nullptr);
+    auto name_str = name_chars ?: ""s;
+    env_->ReleaseStringUTFChars(simple_name, name_chars);
+    env_->DeleteLocalRef(simple_name);
+
+    if (name_str == "XposedInterface") {
+      xposed_interface_cls_ = reinterpret_cast<jclass>(env_->NewLocalRef(cls));
+      return;
+    }
+
+    if (!modern_callbacks_cleared_) {
+      ClearModernCallbacks(cls);
+      modern_callbacks_cleared_ = true;
+      return;
+    }
+
+    if (name_str == "XposedBridge") {
+      ClearLegacyCallbacks(cls);
+      legacy_callbacks_cleared_ = true;
+    }
+  }
+
+  ~XposedCallbackHelper() {
+    env_->DeleteLocalRef(class_cls_);
+    env_->DeleteLocalRef(field_cls_);
+    env_->DeleteLocalRef(collection_cls_);
+    env_->DeleteLocalRef(key_set_view_cls_);
+    env_->DeleteLocalRef(xposed_interface_cls_);
+  }
+
+ private:
+  void ClearLegacyCallbacks(jclass cls) {
+    ClearStaticFieldsAssignableTo(cls, collection_cls_);
+  }
+
+  void ClearModernCallbacks(jclass cls) {
+    if (!key_set_view_cls_) return;
+
+    auto is_xposed = false;
+
+    if (xposed_interface_cls_) {
+      if (env_->IsAssignableFrom(cls, xposed_interface_cls_)) {
+        is_xposed = true;
+      }
+    } else {
+      auto ifaces = reinterpret_cast<jobjectArray>(env_->CallObjectMethod(cls, class_getInterfaces_));
+      if (env_->ExceptionCheck()) {
+        env_->ExceptionClear();
+        return;
+      }
+
+      auto n = ifaces ? env_->GetArrayLength(ifaces) : 0;
+      for (jsize i = 0; i < n; ++i) {
+        auto iface = reinterpret_cast<jclass>(env_->GetObjectArrayElement(ifaces, i));
+        if (!iface) continue;
+
+        auto iface_name = reinterpret_cast<jstring>(env_->CallObjectMethod(iface, class_getSimpleName_));
+        if (env_->ExceptionCheck()) {
+          env_->ExceptionClear();
+          env_->DeleteLocalRef(iface);
+          continue;
+        }
+
+        auto iname_chars = env_->GetStringUTFChars(iface_name, nullptr);
+        auto iname_str = iname_chars ?: ""s;
+        env_->ReleaseStringUTFChars(iface_name, iname_chars);
+        env_->DeleteLocalRef(iface_name);
+
+        if (iname_str == "XposedInterface") {
+          xposed_interface_cls_ = iface;
+          is_xposed = true;
+          break;
+        } else {
+          env_->DeleteLocalRef(iface);
+        }
+      }
+      if (ifaces) env_->DeleteLocalRef(ifaces);
+    }
+
+    if (is_xposed) {
+      ClearStaticFieldsAssignableTo(cls, key_set_view_cls_);
+    }
+  }
+
+  void ClearStaticFieldsAssignableTo(jclass cls, jclass expected_type) {
+    if (!cls || !expected_type) return;
+
+    auto fields = reinterpret_cast<jobjectArray>(env_->CallObjectMethod(cls, class_getDeclaredFields_));
+    if (env_->ExceptionCheck()) {
+      env_->ExceptionClear();
+      return;
+    }
+
+    auto n = env_->GetArrayLength(fields);
+    for (jsize i = 0; i < n; ++i) {
+      auto field = env_->GetObjectArrayElement(fields, i);
+      if (!field) continue;
+
+      env_->CallVoidMethod(field, field_setAccessible_, JNI_TRUE);
+      if (env_->ExceptionCheck()) {
+        env_->ExceptionClear();
+        env_->DeleteLocalRef(field);
+        continue;
+      }
+
+      auto modifiers = env_->CallIntMethod(field, field_getModifiers_);
+      if (env_->ExceptionCheck()) {
+        env_->ExceptionClear();
+        env_->DeleteLocalRef(field);
+        continue;
+      }
+
+      constexpr jint kAccStatic = 0x0008;
+      if (!(modifiers & kAccStatic)) {
+        env_->DeleteLocalRef(field);
+        continue;
+      }
+
+      auto value = env_->CallObjectMethod(field, field_get_, nullptr);
+      if (env_->ExceptionCheck()) {
+        env_->ExceptionClear();
+        env_->DeleteLocalRef(field);
+        continue;
+      }
+
+      if (value && env_->IsInstanceOf(value, expected_type)) {
+        env_->CallVoidMethod(value, collection_clear_);
+        env_->ExceptionClear();
+      }
+
+      if (value) env_->DeleteLocalRef(value);
+      env_->DeleteLocalRef(field);
+    }
+    env_->DeleteLocalRef(fields);
+  }
+
+  JNIEnv* env_;
+  jclass class_cls_;
+  jclass field_cls_;
+  jclass collection_cls_;
+  jclass key_set_view_cls_;
+  jclass xposed_interface_cls_{};
+
+  jmethodID class_getDeclaredFields_;
+  jmethodID class_getSimpleName_;
+  jmethodID class_getInterfaces_;
+  jmethodID field_setAccessible_;
+  jmethodID field_get_;
+  jmethodID field_getModifiers_;
+  jmethodID collection_clear_;
+
+  bool legacy_callbacks_cleared_{};
+  bool modern_callbacks_cleared_{};
+};
 
 extern "C" {
 JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_getUnhookedMethods(JNIEnv* env, jclass) {
@@ -30,7 +212,7 @@ JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_getUnhookedMeth
   return arr;
 }
 
-JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_getFlags(JNIEnv* env, jclass) {
+JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_getFlags(JNIEnv*, jclass) {
   jint flags = 0;
   if (is_lsposed_disabled_) {
     flags |= 1 << 0;
@@ -42,7 +224,7 @@ JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_getFlags(JNIEnv* env, j
 }
 }
 
-static jboolean FakeHookMethod(JNIEnv* env, jclass, jboolean, jobject, jobject, jint, jobject) {
+static jboolean FakeHookMethod(JNIEnv*, jclass, jboolean, jobject, jobject, jint, jobject) {
   return JNI_TRUE;
 }
 
@@ -123,6 +305,7 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
     JNINativeMethod native_methods[] = {{"hookMethod", "(ZLjava/lang/reflect/Executable;Ljava/lang/Class;ILjava/lang/Object;)Z", reinterpret_cast<void*>(FakeHookMethod)}};
     auto for_name_mid = env->GetStaticMethodID(class_cls, "forName", "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
     auto class_names = GetClassNameList(env, previous_class, dex_cache_fid, dex_file_fid, dex_file_cls, get_class_name_list_mid);
+    XposedCallbackHelper helper{env};
     for (auto len = env->GetArrayLength(class_names) - 1; len != -1; --len) {
       auto element = reinterpret_cast<jstring>(env->GetObjectArrayElement(class_names, len));
       auto current_class = reinterpret_cast<jclass>(env->CallStaticObjectMethod(class_cls, for_name_mid, element, JNI_FALSE, previous_class_loader));
@@ -131,19 +314,21 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
         env->ExceptionClear();
         continue;
       }
-      if (env->GetStaticMethodID(current_class, native_methods[0].name, native_methods[0].signature) == nullptr) {
-        env->ExceptionClear();
-        env->DeleteLocalRef(current_class);
-        continue;
-      }
-      if (env->RegisterNatives(current_class, native_methods, 1) != JNI_OK) {
-        env->ExceptionClear();
-        env->DeleteLocalRef(current_class);
-        continue;
+      helper.ClearXposedCallbacks(current_class);
+      if (!is_lsposed_disabled_) {
+        if (env->GetStaticMethodID(current_class, native_methods[0].name, native_methods[0].signature) == nullptr) {
+          env->ExceptionClear();
+          env->DeleteLocalRef(current_class);
+          continue;
+        }
+        if (env->RegisterNatives(current_class, native_methods, 1) != JNI_OK) {
+          env->ExceptionClear();
+          env->DeleteLocalRef(current_class);
+          continue;
+        }
+        is_lsposed_disabled_ = true;
       }
       env->DeleteLocalRef(current_class);
-      is_lsposed_disabled_ = true;
-      break;
     }
     env->DeleteLocalRef(class_names);
   }
