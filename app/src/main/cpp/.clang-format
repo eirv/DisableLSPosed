@@ -1,0 +1,24 @@
+---
+BasedOnStyle: Google
+---
+
+Language: Cpp
+
+AlignConsecutiveMacros: AcrossComments
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: false
+BinPackArguments: false
+BinPackParameters: false
+BreakConstructorInitializers: BeforeColon
+BreakBeforeTernaryOperators: false
+ColumnLimit: 1000
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+Cpp11BracedListStyle: true
+DerivePointerAlignment: false
+FixNamespaceComments: true
+PointerAlignment: Left
+TabWidth: 2
+
+TypenameMacros: ['ElfW']

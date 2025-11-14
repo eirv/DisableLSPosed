@@ -7,10 +7,15 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "file_reader.h"
+#include "linux_syscall_support.h"
+
 using namespace std::string_literals;
+using namespace std::string_view_literals;
 
 static std::vector<std::string> unhooked_methods_{};
 static bool is_lsposed_disabled_{};
@@ -74,9 +79,7 @@ class XposedCallbackHelper {
   }
 
  private:
-  void ClearLegacyCallbacks(jclass cls) {
-    ClearStaticFieldsAssignableTo(cls, collection_cls_);
-  }
+  void ClearLegacyCallbacks(jclass cls) { ClearStaticFieldsAssignableTo(cls, collection_cls_); }
 
   void ClearModernCallbacks(jclass cls) {
     if (!key_set_view_cls_) return;
@@ -224,9 +227,7 @@ JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_getFlags(JNIEnv*, jclas
 }
 }
 
-static jboolean FakeHookMethod(JNIEnv*, jclass, jboolean, jobject, jobject, jint, jobject) {
-  return JNI_TRUE;
-}
+static jboolean FakeHookMethod(JNIEnv*, jclass, jboolean, jobject, jobject, jint, jobject) { return JNI_TRUE; }
 
 jobjectArray GetClassNameList(JNIEnv* env, jclass cls, jfieldID dex_cache_fid, jfieldID dex_file_fid, jclass dex_file_cls, jmethodID get_class_name_list_mid) {
   auto dex_cache = env->GetObjectField(cls, dex_cache_fid);
@@ -335,22 +336,26 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
   env->DeleteLocalRef(dex_file_cls);
   env->DeleteLocalRef(previous_class_loader);
   env->DeleteLocalRef(previous_class);
-  std::vector<uintptr_t> indirect_ref_tables;
-  auto maps = fopen("/proc/self/maps", "r");
-  char buf[256];
-  while (fgets(buf, sizeof(buf), maps)) {
-    if (strstr(buf, "[anon:dalvik-indirect ref table]")) {
-      indirect_ref_tables.push_back(strtoul(buf, nullptr, 16));
-    }
+  std::set<uintptr_t> indirect_ref_tables;
+#ifdef __LP64__
+  constexpr auto kernel_ptr_size = sizeof(void*);
+#else
+  auto kernel_ptr_size = raw_access("/system/bin/linker64", X_OK) == 0 ? sizeof(uint64_t) : sizeof(uint32_t);
+#endif
+  auto maps_name_offset = 25 + kernel_ptr_size * 6;
+  for (auto line : FileReader{"/proc/self/maps"}) {
+    if (line.size() < maps_name_offset) continue;
+    auto name = line.substr(maps_name_offset);
+    if (name != "[anon:dalvik-indirect ref table]") continue;
+    indirect_ref_tables.emplace(strtoul(line.data(), nullptr, 16));
   }
-  fclose(maps);
   uint32_t* global_ref_table = nullptr;
   size_t global_ref_count = 0;
   auto mem = reinterpret_cast<uintptr_t*>(vm + 1);
   for (size_t i = 0; 512 > i; ++i) {
-    if (std::find(indirect_ref_tables.begin(), indirect_ref_tables.end(), mem[i]) == indirect_ref_tables.end()) continue;
+    if (indirect_ref_tables.find(mem[i]) == indirect_ref_tables.end()) continue;
     if (mem[i + 1] != 2 /* IndirectRefKind::kGlobal */) continue;
-    if (mem[i + 3] > 1000000) continue;
+    if (mem[i + 3] > 1'000'000) continue;
     global_ref_table = reinterpret_cast<uint32_t*>(mem[i]);
     global_ref_count = mem[i + 2];
     break;
@@ -443,30 +448,29 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
   env->DeleteLocalRef(object_arr);
   env->DeleteLocalRef(unsafe);
   if (Dl_info info{}; dladdr(reinterpret_cast<void*>(vm->functions->GetEnv), &info)) {
-    auto fd = open(info.dli_fname, O_RDONLY, 0);
+    auto fd = raw_open(info.dli_fname, O_RDONLY, 0);
     if (fd < 0) return JNI_VERSION_1_6;
-    auto size = lseek(fd, 0, SEEK_END);
-    auto elf = reinterpret_cast<ElfW(Ehdr)*>(mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0));
-    if (elf == MAP_FAILED) {
-      close(fd);
+    auto size = raw_lseek(fd, 0, SEEK_END);
+    auto elf = static_cast<ElfW(Ehdr)*>(raw_mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0));
+    if (reinterpret_cast<uintptr_t>(elf) >= -4095UL) {
+      raw_close(fd);
       return JNI_VERSION_1_6;
     }
     for (auto phdr = reinterpret_cast<ElfW(Phdr)*>(reinterpret_cast<uintptr_t>(elf) + elf->e_phoff), phdr_limit = phdr + elf->e_phnum; phdr < phdr_limit; ++phdr) {
+      if (phdr->p_type != PT_LOAD) continue;
       if ((phdr->p_flags & PF_X) == 0) continue;
-      auto sg_addr = __builtin_align_down(reinterpret_cast<char*>(info.dli_fbase) + phdr->p_vaddr, phdr->p_align);
-#pragma clang diagnostic push
-#pragma ide diagnostic ignored "ArgumentSelectionDefects"
-      auto sg_size = __builtin_align_up(phdr->p_memsz, getpagesize());
-#pragma clang diagnostic pop
-      auto page = mmap(sg_addr, sg_size, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_FIXED, fd, __builtin_align_down(static_cast<off_t>(phdr->p_offset), phdr->p_align));
-      if (page != MAP_FAILED) {
-        __builtin___clear_cache(sg_addr, sg_addr + sg_size);
+      if ((phdr->p_flags & PF_W) != 0) continue;
+      auto segment_addr = __builtin_align_down(static_cast<char*>(info.dli_fbase) + phdr->p_vaddr, phdr->p_align);
+      auto segment_size = __builtin_align_up(phdr->p_memsz, getpagesize());
+      auto segment_offset = __builtin_align_down(static_cast<off_t>(phdr->p_offset), phdr->p_align);
+      auto map = raw_mmap(segment_addr, segment_size, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_FIXED, fd, segment_offset);
+      if (reinterpret_cast<uintptr_t>(elf) >= -4095UL) {
+        __builtin___clear_cache(segment_addr, segment_addr + segment_size);
         is_art_restored_ = true;
       }
-      break;
     }
-    close(fd);
-    munmap(elf, size);
+    raw_munmap(elf, size);
+    raw_close(fd);
   }
   return JNI_VERSION_1_6;
 }

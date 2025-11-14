@@ -5,6 +5,7 @@ plugins {
 android {
     namespace = "io.github.eirv.disablelsposed"
     compileSdk = 35
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "io.github.eirv.disablelsposed"
@@ -15,7 +16,7 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags += "-std=c++17"
+                cppFlags += "-std=c++23"
                 abiFilters("arm64-v8a")
             }
         }
