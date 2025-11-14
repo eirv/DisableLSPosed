@@ -464,7 +464,7 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
       auto segment_size = __builtin_align_up(phdr->p_memsz, getpagesize());
       auto segment_offset = __builtin_align_down(static_cast<off_t>(phdr->p_offset), phdr->p_align);
       auto map = raw_mmap(segment_addr, segment_size, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_FIXED, fd, segment_offset);
-      if (reinterpret_cast<uintptr_t>(elf) >= -4095UL) {
+      if (reinterpret_cast<uintptr_t>(elf) < -4095UL) {
         __builtin___clear_cache(segment_addr, segment_addr + segment_size);
         is_art_restored_ = true;
       }
