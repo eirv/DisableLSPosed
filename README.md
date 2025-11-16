@@ -1,14 +1,17 @@
 # DisableLSPosed
 
-让 [LSPosed](https://github.com/LSPosed/LSPosed) 失效并恢复所有被 [LSPlant](https://github.com/LSPosed/LSPlant) hook 的方法
+[**中文**](README_zh.md)
 
- - 使 `LSPosed` 无法 hook 任何方法
- - 使 `IXposedHookLoadPackage::handleLoadPackage` 回调不被调用
- - 恢复先前被 `LSPosed (LSPlant)` hook 的方法
- - 恢复内存中对于 `libart.so` 的 inline hook
+Disable [LSPosed](https://github.com/LSPosed/LSPosed) and restore all methods hooked by [LSPlant](https://github.com/LSPosed/LSPlant).
 
-代码我乱写的, 仅供娱乐, 如需使用, 以下操作需要你来完成:
- - [处理 JNI 产生的异常](https://chatgpt.com)
- - [处理 GC](https://github.com/canyie/pine/blob/fff37b80774a091d0e1e5c6d5c3ecabcb4082815/core/src/main/cpp/android.h#L152)
+* Prevent `LSPosed` from hooking any method
+* Block calls to the `IXposedHookLoadPackage::handleLoadPackage` callback
+* Restore methods previously hooked by `LSPosed (LSPlant)`
+* Restore inline hooks to `libart.so` in memory
+
+The code was written casually and is for entertainment purposes only. If you intend to use it, you will need to handle the following yourself:
+
+* [Handle exceptions thrown by JNI](https://chatgpt.com)
+* [Handle GC](https://github.com/canyie/pine/blob/fff37b80774a091d0e1e5c6d5c3ecabcb4082815/core/src/main/cpp/android.h#L152)
 
 <img alt="Screenshot" src="./Screenshot.jpg" width="500" />
