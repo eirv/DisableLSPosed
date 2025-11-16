@@ -25,7 +25,13 @@ static bool is_art_restored_{};
 
 class XposedCallbackHelper {
  public:
-  explicit XposedCallbackHelper(JNIEnv* env) : env_{env}, class_cls_{JNI_FindClass(env, "java/lang/Class")}, field_cls_{JNI_FindClass(env, "java/lang/reflect/Field")}, collection_cls_{JNI_FindClass(env, "java/util/Collection")}, key_set_view_cls_{JNI_FindClass(env, "java/util/concurrent/ConcurrentHashMap$KeySetView")}, xposed_interface_cls_{env} {
+  explicit XposedCallbackHelper(JNIEnv* env)
+      : env_{env},
+        class_cls_{JNI_FindClass(env, "java/lang/Class")},
+        field_cls_{JNI_FindClass(env, "java/lang/reflect/Field")},
+        collection_cls_{JNI_FindClass(env, "java/util/Collection")},
+        key_set_view_cls_{JNI_FindClass(env, "java/util/concurrent/ConcurrentHashMap$KeySetView")},
+        xposed_interface_cls_{env} {
     class_getDeclaredFields_ = JNI_GetMethodID(env, class_cls_, "getDeclaredFields", "()[Ljava/lang/reflect/Field;");
     class_getSimpleName_ = JNI_GetMethodID(env, class_cls_, "getSimpleName", "()Ljava/lang/String;");
     class_getInterfaces_ = JNI_GetMethodID(env, class_cls_, "getInterfaces", "()[Ljava/lang/Class;");
@@ -169,7 +175,12 @@ JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_getFlags(JNIEnv*, jclas
 
 static jboolean FakeHookMethod(JNIEnv*, jclass, jboolean, jobject, jobject, jint, jobject) { return JNI_TRUE; }
 
-auto GetClassNameList(JNIEnv* env, ScopedLocalRef<jclass>& cls, jfieldID dex_cache_fid, jfieldID dex_file_fid, ScopedLocalRef<jclass>& dex_file_cls, jmethodID get_class_name_list_mid) {
+auto GetClassNameList(JNIEnv* env,
+                      ScopedLocalRef<jclass>& cls,
+                      jfieldID dex_cache_fid,
+                      jfieldID dex_file_fid,
+                      ScopedLocalRef<jclass>& dex_file_cls,
+                      jmethodID get_class_name_list_mid) {
   auto dex_cache = JNI_GetObjectField(env, cls, dex_cache_fid);
   auto native_dex_file = JNI_GetLongField(env, dex_cache, dex_file_fid);
   auto cookie = JNI_NewLongArray(env, 2);
@@ -185,7 +196,8 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
   }
 
   auto dex_file_cls = JNI_FindClass(env, "dalvik/system/DexFile");
-  auto load_dex_mid = JNI_GetStaticMethodID(env, dex_file_cls, "loadDex", "(Ljava/lang/String;Ljava/lang/String;I)Ldalvik/system/DexFile;");
+  auto load_dex_mid = JNI_GetStaticMethodID(
+      env, dex_file_cls, "loadDex", "(Ljava/lang/String;Ljava/lang/String;I)Ldalvik/system/DexFile;");
   env->CallStaticObjectMethod(dex_file_cls.get(), load_dex_mid, nullptr, nullptr, jint{0});
   auto exception = ScopedLocalRef{env, env->ExceptionOccurred()};
   env->ExceptionClear();
@@ -198,7 +210,8 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
   auto dex_cache_cls = JNI_FindClass(env, "java/lang/DexCache");
   auto dex_file_fid = JNI_GetFieldID(env, dex_cache_cls, "dexFile", "J");
   auto boot_class_loader = JNI_CallObjectMethod(env, dex_file_cls, get_class_loader_mid);
-  auto get_class_name_list_mid = JNI_GetStaticMethodID(env, dex_file_cls, "getClassNameList", "(Ljava/lang/Object;)[Ljava/lang/String;");
+  auto get_class_name_list_mid =
+      JNI_GetStaticMethodID(env, dex_file_cls, "getClassNameList", "(Ljava/lang/Object;)[Ljava/lang/String;");
   ScopedLocalRef<jclass> previous_class{env};
   ScopedLocalRef<jobject> previous_class_loader{env};
   auto found = false;
@@ -217,7 +230,8 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
       previous_class.reset(element.release());
       continue;
     }
-    auto class_names = GetClassNameList(env, element, dex_cache_fid, dex_file_fid, dex_file_cls, get_class_name_list_mid);
+    auto class_names =
+        GetClassNameList(env, element, dex_cache_fid, dex_file_fid, dex_file_cls, get_class_name_list_mid);
     if (class_names.size() == 1) {
       found = true;
       break;
@@ -226,13 +240,18 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
     previous_class_loader.reset(class_loader.release());
   }
   if (found) {
-    JNINativeMethod native_methods[] = {{"hookMethod", "(ZLjava/lang/reflect/Executable;Ljava/lang/Class;ILjava/lang/Object;)Z", reinterpret_cast<void*>(FakeHookMethod)}};
-    auto for_name_mid = JNI_GetStaticMethodID(env, class_cls, "forName", "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
-    auto class_names = GetClassNameList(env, previous_class, dex_cache_fid, dex_file_fid, dex_file_cls, get_class_name_list_mid);
+    JNINativeMethod native_methods[] = {{"hookMethod",
+                                         "(ZLjava/lang/reflect/Executable;Ljava/lang/Class;ILjava/lang/Object;)Z",
+                                         reinterpret_cast<void*>(FakeHookMethod)}};
+    auto for_name_mid = JNI_GetStaticMethodID(
+        env, class_cls, "forName", "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
+    auto class_names =
+        GetClassNameList(env, previous_class, dex_cache_fid, dex_file_fid, dex_file_cls, get_class_name_list_mid);
     XposedCallbackHelper helper{env};
     for (jsize len = class_names.size() - 1; len != -1; --len) {
       auto element = JNI_Cast<jstring>(class_names[len]);
-      auto current_class = JNI_Cast<jclass>(JNI_CallStaticObjectMethod(env, class_cls, for_name_mid, element, JNI_FALSE, previous_class_loader));
+      auto current_class = JNI_Cast<jclass>(
+          JNI_CallStaticObjectMethod(env, class_cls, for_name_mid, element, JNI_FALSE, previous_class_loader));
       if (!current_class) {
         continue;
       }
@@ -300,7 +319,8 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
   auto put_object_mid = JNI_GetMethodID(env, unsafe_cls, "putObject", "(Ljava/lang/Object;JLjava/lang/Object;)V");
   auto get_int_mid = JNI_GetMethodID(env, unsafe_cls, "getInt", "(Ljava/lang/Object;J)I");
   JNI_CallVoidMethod(env, unsafe, put_object_mid, object_arr, static_cast<jlong>(object_arr_base_off), method_cls);
-  auto method_cls_addr = static_cast<uint32_t>(JNI_CallIntMethod(env, unsafe, get_int_mid, object_arr, static_cast<jlong>(object_arr_base_off)));
+  auto method_cls_addr = static_cast<uint32_t>(
+      JNI_CallIntMethod(env, unsafe, get_int_mid, object_arr, static_cast<jlong>(object_arr_base_off)));
   size_t art_method_size = 0;
   {
     auto methods = static_cast<uintptr_t>(*reinterpret_cast<uint64_t*>(method_cls_addr + methods_off));
@@ -329,7 +349,12 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
       auto access_flags = method[1];
       memcpy(method, reinterpret_cast<void*>(art_method), art_method_size);
       method[1] = access_flags;
-      JNI_CallVoidMethod(env, unsafe, put_int, object_arr, static_cast<jlong>(object_arr_base_off), static_cast<jint>(target_class_addr));
+      JNI_CallVoidMethod(env,
+                         unsafe,
+                         put_int,
+                         object_arr,
+                         static_cast<jlong>(object_arr_base_off),
+                         static_cast<jint>(target_class_addr));
       auto target_cls = JNI_Cast<jclass>(object_arr[0]);
       auto target_cls_name_jstr = JNI_Cast<jstring>(JNI_CallObjectMethod(env, target_cls, class_get_name_mid));
       auto target_cls_name = JUTFString{target_cls_name_jstr};
@@ -349,14 +374,18 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
       raw_close(fd);
       return JNI_VERSION_1_6;
     }
-    for (auto phdr = reinterpret_cast<ElfW(Phdr)*>(reinterpret_cast<uintptr_t>(elf) + elf->e_phoff), phdr_limit = phdr + elf->e_phnum; phdr < phdr_limit; ++phdr) {
+    for (auto phdr = reinterpret_cast<ElfW(Phdr)*>(reinterpret_cast<uintptr_t>(elf) + elf->e_phoff),
+              phdr_limit = phdr + elf->e_phnum;
+         phdr < phdr_limit;
+         ++phdr) {
       if (phdr->p_type != PT_LOAD) continue;
       if ((phdr->p_flags & PF_X) == 0) continue;
       if ((phdr->p_flags & PF_W) != 0) continue;
       auto segment_addr = __builtin_align_down(static_cast<char*>(info.dli_fbase) + phdr->p_vaddr, phdr->p_align);
       auto segment_size = __builtin_align_up(phdr->p_memsz, getpagesize());
       auto segment_offset = __builtin_align_down(static_cast<off_t>(phdr->p_offset), phdr->p_align);
-      auto map = raw_mmap(segment_addr, segment_size, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_FIXED, fd, segment_offset);
+      auto map =
+          raw_mmap(segment_addr, segment_size, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_FIXED, fd, segment_offset);
       if (reinterpret_cast<uintptr_t>(elf) < -4095UL) {
         __builtin___clear_cache(segment_addr, segment_addr + segment_size);
         is_art_restored_ = true;

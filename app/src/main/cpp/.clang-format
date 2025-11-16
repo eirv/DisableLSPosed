@@ -13,7 +13,7 @@ BinPackArguments: false
 BinPackParameters: false
 BreakConstructorInitializers: BeforeColon
 BreakBeforeTernaryOperators: false
-ColumnLimit: 1000
+ColumnLimit: 120
 ConstructorInitializerAllOnOneLineOrOnePerLine: true
 Cpp11BracedListStyle: true
 DerivePointerAlignment: false
