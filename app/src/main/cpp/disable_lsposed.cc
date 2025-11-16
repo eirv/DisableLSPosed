@@ -255,7 +255,7 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
   auto kernel_ptr_size = raw_access("/system/bin/linker64", X_OK) == 0 ? sizeof(uint64_t) : sizeof(uint32_t);
 #endif
   auto maps_name_offset = 25 + kernel_ptr_size * 6;
-  for (auto line : FileReader{"/proc/self/maps"}) {
+  for (auto line : io::FileReader{"/proc/self/maps"}) {
     if (line.size() < maps_name_offset) continue;
     auto name = line.substr(maps_name_offset);
     if (name != "[anon:dalvik-indirect ref table]") continue;
