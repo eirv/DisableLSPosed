@@ -1,4 +1,6 @@
 // AIGC
+// ChatGPT converts Java code into equivalent C++ JNI code.
+
 #include "descriptor_builder.h"
 
 #include <jni.h>
