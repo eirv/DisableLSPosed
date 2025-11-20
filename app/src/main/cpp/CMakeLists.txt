@@ -11,7 +11,8 @@ cmake_minimum_required(VERSION 3.22.1)
 # build script scope).
 project("disablelsposed")
 
-add_subdirectory(third-party/linux-syscall-support)
+find_package(cxx REQUIRED CONFIG)
+link_libraries(cxx::cxx)
 
 # Creates and names a library, sets it as either STATIC
 # or SHARED, and provides the relative paths to its source code.
@@ -28,13 +29,37 @@ add_subdirectory(third-party/linux-syscall-support)
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
-        disable_lsposed.cc)
+        disable_lsposed.cc
+        descriptor_builder.cc)
 
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE . third-party/lsplant)
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+        .
+        third-party/linux-syscall-support
+        third-party/lsplant)
 
 # Specifies libraries CMake should link to your target library. You
 # can link libraries from various origins, such as libraries defined in this
 # build script, prebuilt third-party libraries, or Android system libraries.
 target_link_libraries(${CMAKE_PROJECT_NAME}
         # List libraries link to the target library
-        log dl linux-syscall-support)
+        log dl)
+
+target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
+        -Wall
+        -fno-exceptions
+        -fno-rtti
+        -Oz
+        -flto
+        -fdata-sections
+        -ffunction-sections
+        -fno-stack-protector
+        -fvisibility=hidden
+        -fvisibility-inlines-hidden
+        -fomit-frame-pointer
+        -fno-unwind-tables
+        -fno-asynchronous-unwind-tables)
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+        -Wl,-exclude-libs,ALL
+        -Wl,--as-needed
+        -Wl,--gc-sections
+        -Wl,--icf=all)

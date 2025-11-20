@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="message">"
+Attempt to disable LSPosed: %1$s
+
+Attempt to restore inline hook for libart.so: %2$s
+
+Restored &lt;font color='#FFFFFF'&gt;%3$d&lt;/font&gt; methods hooked by LSPlant:
+"</string>
+    <string name="success">"&lt;font color='green'&gt;Success&lt;/font&gt;"</string>
+    <string name="failure">"&lt;font color='red'&gt;Failure&lt;/font&gt;"</string>
+</resources>

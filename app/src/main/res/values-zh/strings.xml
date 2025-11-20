@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="message">"
+尝试禁用 LSPosed: %1$s
+
+尝试恢复对 libart.so 的 inline hook: %2$s
+
+恢复了 &lt;font color='#FFFFFF'&gt;%3$d&lt;/font&gt; 个被 LSPlant hook 的方法:
+"</string>
+    <string name="success">"&lt;font color='green'&gt;成功&lt;/font&gt;"</string>
+    <string name="failure">"&lt;font color='red'&gt;失败&lt;/font&gt;"</string>
+</resources>

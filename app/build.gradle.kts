@@ -12,12 +12,12 @@ android {
         minSdk = 33
         targetSdk = 35
         versionCode = 2
-        versionName = "1.1"
+        versionName = "1.2"
 
         externalNativeBuild {
             cmake {
+                arguments += "-DANDROID_STL=none"
                 cppFlags += "-std=c++23"
-                abiFilters("arm64-v8a")
             }
         }
     }
@@ -32,6 +32,9 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+    buildFeatures {
+        prefab = true
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -42,7 +45,11 @@ android {
             version = "3.22.1"
         }
     }
+    lint {
+        checkReleaseBuilds = false
+    }
 }
 
 dependencies {
+    compileOnly(libs.cxx)
 }

@@ -27,7 +27,7 @@ class BaseIterator {
   using pointer = value_type*;
   using const_pointer = const value_type*;
 
-  BaseIterator() {}
+  BaseIterator() = default;
   explicit BaseIterator(Reader* reader) : reader_{reader} { ++(*this); }
 
   auto operator*() const noexcept -> const_reference { return current_; }
@@ -58,8 +58,7 @@ class BaseIterator {
     return tmp;
   }
 
-  auto operator==(const BaseIterator& other) const noexcept { return reader_ == other.reader_; }
-  auto operator!=(const BaseIterator& other) const noexcept { return !(*this == other); }
+  bool operator==(const BaseIterator& other) const noexcept { return reader_ == other.reader_; }
 
  private:
   Reader* reader_{};
@@ -195,21 +194,21 @@ enum class DirEntryType : uint8_t {
 struct DirEntry {
   kernel_dirent64* entry;
 
-  auto inode() const { return entry->d_ino; }
-  auto offset() const { return entry->d_off; }
-  auto type() const { return static_cast<DirEntryType>(entry->d_type); }
-  auto name() const {
+  [[nodiscard]] auto inode() const { return entry->d_ino; }
+  [[nodiscard]] auto offset() const { return entry->d_off; }
+  [[nodiscard]] auto type() const { return static_cast<DirEntryType>(entry->d_type); }
+  [[nodiscard]] auto name() const {
     return std::string_view{entry->d_name, strnlen(entry->d_name, entry->d_reclen - offsetof(kernel_dirent64, d_name))};
   }
 
-  auto is_unknown() const { return type() == DirEntryType::kUnknown; }
-  auto is_fifo() const { return type() == DirEntryType::kFIFO; }
-  auto is_character_device() const { return type() == DirEntryType::kCharacterDevice; }
-  auto is_directory() const { return type() == DirEntryType::kDirectory; }
-  auto is_block_device() const { return type() == DirEntryType::kBlockDevice; }
-  auto is_regular_file() const { return type() == DirEntryType::kRegularFile; }
-  auto is_symbolic_link() const { return type() == DirEntryType::kSymbolicLink; }
-  auto is_socket() const { return type() == DirEntryType::kSocket; }
+  [[nodiscard]] auto is_unknown() const { return type() == DirEntryType::kUnknown; }
+  [[nodiscard]] auto is_fifo() const { return type() == DirEntryType::kFIFO; }
+  [[nodiscard]] auto is_character_device() const { return type() == DirEntryType::kCharacterDevice; }
+  [[nodiscard]] auto is_directory() const { return type() == DirEntryType::kDirectory; }
+  [[nodiscard]] auto is_block_device() const { return type() == DirEntryType::kBlockDevice; }
+  [[nodiscard]] auto is_regular_file() const { return type() == DirEntryType::kRegularFile; }
+  [[nodiscard]] auto is_symbolic_link() const { return type() == DirEntryType::kSymbolicLink; }
+  [[nodiscard]] auto is_socket() const { return type() == DirEntryType::kSocket; }
 };
 
 template <size_t kBufferSize = 16 * 1024, bool kUseHeap = false>
