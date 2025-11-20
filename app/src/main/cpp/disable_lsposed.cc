@@ -173,8 +173,6 @@ JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_getFlags(JNIEnv*, jclas
 }
 }
 
-static jboolean FakeHookMethod(JNIEnv*, jclass, jboolean, jobject, jobject, jint, jobject) { return JNI_TRUE; }
-
 auto GetClassNameList(JNIEnv* env,
                       ScopedLocalRef<jclass>& cls,
                       jfieldID dex_cache_fid,
@@ -240,9 +238,11 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
     previous_class_loader.reset(class_loader.release());
   }
   if (found) {
-    JNINativeMethod native_methods[] = {{"hookMethod",
-                                         "(ZLjava/lang/reflect/Executable;Ljava/lang/Class;ILjava/lang/Object;)Z",
-                                         reinterpret_cast<void*>(FakeHookMethod)}};
+    auto native_methods = std::array{JNINativeMethod{
+        "hookMethod",
+        "(ZLjava/lang/reflect/Executable;Ljava/lang/Class;ILjava/lang/Object;)Z",
+        reinterpret_cast<void*>(
+            +[](JNIEnv*, jclass, jboolean, jobject, jobject, jint, jobject) -> jboolean { return JNI_TRUE; })}};
     auto for_name_mid = JNI_GetStaticMethodID(
         env, class_cls, "forName", "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
     auto class_names =
@@ -257,10 +257,12 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
       }
       helper.ClearXposedCallbacks(current_class);
       if (!is_lsposed_disabled_) {
-        if (JNI_GetStaticMethodID(env, current_class, native_methods[0].name, native_methods[0].signature) == nullptr) {
+        if (env->GetStaticMethodID(current_class.get(), native_methods[0].name, native_methods[0].signature) ==
+            nullptr) {
+          env->ExceptionClear();
           continue;
         }
-        if (JNI_RegisterNatives(env, current_class, native_methods, 1) != JNI_OK) {
+        if (JNI_RegisterNatives(env, current_class, native_methods.data(), native_methods.size()) != JNI_OK) {
           continue;
         }
         is_lsposed_disabled_ = true;
