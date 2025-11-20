@@ -14,4 +14,4 @@ The code was written casually and is for entertainment purposes only. If you int
 * [Handle exceptions thrown by JNI](https://chatgpt.com)
 * [Handle GC](https://github.com/canyie/pine/blob/fff37b80774a091d0e1e5c6d5c3ecabcb4082815/core/src/main/cpp/android.h#L152)
 
-<img alt="Screenshot" src="./Screenshot.jpg" width="500" />
+<img alt="Screenshot" src="./imgs/screenshot_en.jpg" width="480" />
