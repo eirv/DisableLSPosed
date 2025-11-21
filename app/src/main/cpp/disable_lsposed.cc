@@ -268,13 +268,8 @@ class Unsafe {
     auto array_base_offset_mid = JNI_GetMethodID(env, unsafe_cls, "arrayBaseOffset", "(Ljava/lang/Class;)I");
     auto object_arr_cls = JNI_GetObjectClass(env, object_arr_.get());
     object_arr_base_off_ = JNI_CallNonvirtualIntMethod(env, unsafe_, unsafe_cls, array_base_offset_mid, object_arr_cls);
-    put_object_mid_ = JNI_GetMethodID(env, unsafe_cls, "putObject", "(Ljava/lang/Object;JLjava/lang/Object;)V");
     get_int_mid_ = JNI_GetMethodID(env, unsafe_cls, "getInt", "(Ljava/lang/Object;J)I");
     put_int_mid_ = JNI_GetMethodID(env, unsafe_cls, "putInt", "(Ljava/lang/Object;JI)V");
-  }
-
-  void PutObject(jobject obj, jlong offset, jobject x) {
-    JNI_CallVoidMethod(env_, unsafe_, put_object_mid_, obj, offset, x);
   }
 
   auto GetInt(jobject obj, jlong offset) { return JNI_CallIntMethod(env_, unsafe_, get_int_mid_, obj, offset); }
@@ -288,7 +283,7 @@ class Unsafe {
 
   template <typename T>
   auto NewLocalRef(uint32_t addr) {
-    PutInt(object_arr_.get(), object_arr_base_off_, addr);
+    PutInt(object_arr_.get(), object_arr_base_off_, static_cast<jint>(addr));
     return reinterpret_cast<T>(object_arr_[0].release());
   }
 
@@ -296,7 +291,6 @@ class Unsafe {
   JNIEnv* env_;
   ScopedLocalRef<jobject> unsafe_;
   ScopedLocalRef<jobjectArray> object_arr_;
-  jmethodID put_object_mid_;
   jmethodID get_int_mid_;
   jmethodID put_int_mid_;
   jint object_arr_base_off_;
@@ -340,7 +334,7 @@ static std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>>
   ScopedLocalRef<jclass> hooker_class{env};
   ScopedLocalRef<jobject> hooker_class_loader{env};
 
-  for (jsize i = 2, len = backtrace.size(); i < len; ++i) {
+  for (jsize i = 2, len = static_cast<jsize>(backtrace.size()); i < len; ++i) {
     auto element = JNI_Cast<jclass>(backtrace[i]);
     if (!element) continue;
     auto class_loader = JNI_CallNonvirtualObjectMethod(env, element, class_cls, get_class_loader_mid);
@@ -446,7 +440,7 @@ static void RemapExecutableSegmentsForArt(JavaVM* vm) {
     if ((phdr->p_flags & PF_W) != 0) continue;
 
     auto segment_addr = __builtin_align_down(static_cast<char*>(info.dli_fbase) + phdr->p_vaddr, phdr->p_align);
-    auto segment_size = __builtin_align_up(phdr->p_memsz, getpagesize());
+    auto segment_size = __builtin_align_up(phdr->p_memsz, static_cast<size_t>(getpagesize()));
     auto segment_offset = __builtin_align_down(static_cast<off_t>(phdr->p_offset), phdr->p_align);
 
     auto segment_prot = PROT_EXEC;
@@ -469,7 +463,7 @@ static jobjectArray ToStringArray(JNIEnv* env, std::vector<std::string>& vec) {
   auto arr = JNI_NewObjectArray(env, static_cast<jsize>(vec.size()), string_cls, nullptr);
   jsize i = 0;
   for (const auto& s : vec) {
-    auto jstr = JNI_NewStringUTF(env, s.c_str());
+    auto jstr = JNI_NewStringUTF(env, s);
     arr[i++] = jstr.get();
   }
   vec.clear();
@@ -499,7 +493,7 @@ JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_getUnhookedMethodLis
 #endif
 }
 
-JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_getFrameworkName(JNIEnv* env, jclass) {
+JNIEXPORT jstring Java_io_github_eirv_disablelsposed_Native_getFrameworkName(JNIEnv* env, jclass) {
   return env->NewStringUTF(framework_name_.c_str());
 }
 
@@ -661,7 +655,7 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
                                                            target_method_name_jstr.get(),
                                                            reinterpret_cast<jobjectArray>(target_parameter_types.get()),
                                                            reinterpret_cast<jclass>(target_return_type.get()),
-                                                           access_flags);
+                                                           static_cast<jint>(access_flags));
         JNI_CallNonvirtualBooleanMethod(env, array_list, array_list_cls, array_list_add_mid, descriptor);
 #else
         auto target_cls_name_jstr =
