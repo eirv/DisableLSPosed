@@ -2,7 +2,7 @@
 
 [**English**](README.md)
 
-让 [LSPosed](https://github.com/LSPosed/LSPosed) 失效并恢复所有被 [LSPlant](https://github.com/LSPosed/LSPlant) hook 的方法
+让 [LSPosed](https://github.com/LSPosed/LSPosed)/[LSPatch](https://github.com/LSPosed/LSPatch) 失效并恢复所有被 [LSPlant](https://github.com/LSPosed/LSPlant) hook 的方法
 
 * 使 `LSPosed` 无法 hook 任何方法
 * 阻止调用 `IXposedHookLoadPackage::handleLoadPackage` 回调

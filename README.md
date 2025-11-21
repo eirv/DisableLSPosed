@@ -2,7 +2,7 @@
 
 [**中文**](README_zh.md)
 
-Disable [LSPosed](https://github.com/LSPosed/LSPosed) and restore all methods hooked by [LSPlant](https://github.com/LSPosed/LSPlant).
+Disable [LSPosed](https://github.com/LSPosed/LSPosed)/[LSPatch](https://github.com/LSPosed/LSPatch) and restore all methods hooked by [LSPlant](https://github.com/LSPosed/LSPlant).
 
 * Prevent `LSPosed` from hooking any method
 * Block calls to the `IXposedHookLoadPackage::handleLoadPackage` callback
