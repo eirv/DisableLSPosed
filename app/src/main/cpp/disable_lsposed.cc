@@ -32,8 +32,17 @@ static jobject unhooked_method_list_{};
 static std::vector<std::string> unhooked_methods_{};
 #endif
 
+static std::vector<std::string> cleared_callbacks_{};
+
 static bool is_lsposed_disabled_{};
 static bool is_art_restored_{};
+
+template <typename T>
+static void insert_ordered_unique(std::vector<T>& vec, const T& value) {
+  if (std::find(vec.begin(), vec.end(), value) == vec.end()) {
+    vec.push_back(value);
+  }
+}
 
 class XposedCallbackHelper {
  public:
@@ -45,12 +54,18 @@ class XposedCallbackHelper {
         key_set_view_cls_{JNI_FindClass(env, "java/util/concurrent/ConcurrentHashMap$KeySetView")},
         xposed_interface_cls_{env} {
     class_getDeclaredFields_ = JNI_GetMethodID(env_, class_cls_, "getDeclaredFields", "()[Ljava/lang/reflect/Field;");
+    class_getName_ = JNI_GetMethodID(env_, class_cls_, "getName", "()Ljava/lang/String;");
     class_getSimpleName_ = JNI_GetMethodID(env_, class_cls_, "getSimpleName", "()Ljava/lang/String;");
     class_getInterfaces_ = JNI_GetMethodID(env_, class_cls_, "getInterfaces", "()[Ljava/lang/Class;");
     field_setAccessible_ = JNI_GetMethodID(env_, field_cls_, "setAccessible", "(Z)V");
     field_get_ = JNI_GetMethodID(env_, field_cls_, "get", "(Ljava/lang/Object;)Ljava/lang/Object;");
     field_getModifiers_ = JNI_GetMethodID(env_, field_cls_, "getModifiers", "()I");
     collection_clear_ = JNI_GetMethodID(env_, collection_cls_, "clear", "()V");
+    auto iterable_cls = JNI_FindClass(env, "java/lang/Iterable");
+    iterable_iterator_ = JNI_GetMethodID(env, iterable_cls, "iterator", "()Ljava/util/Iterator;");
+    auto iterator_cls = JNI_FindClass(env, "java/util/Iterator");
+    iterator_hasNext_ = JNI_GetMethodID(env, iterator_cls, "hasNext", "()Z");
+    iterator_next_ = JNI_GetMethodID(env, iterator_cls, "next", "()Ljava/lang/Object;");
   }
 
   void ClearXposedCallbacks(ScopedLocalRef<jclass>& cls) {
@@ -60,28 +75,27 @@ class XposedCallbackHelper {
     if (!name_jstr) return;
     auto name = JUTFString{name_jstr};
 
-    if (name.get() == "XposedInterface"sv) {
-      xposed_interface_cls_ = cls.clone();
-      return;
-    }
-
     if (!modern_cleared_) {
-      ClearModernCallbacks(cls);
-      modern_cleared_ = true;
-      return;
+      if (name.get() == "XposedInterface"sv) {
+        xposed_interface_cls_ = cls.clone();
+        return;
+      } else if (ClearModernCallbacks(cls)) {
+        modern_cleared_ = true;
+        return;
+      }
     }
 
-    if (name.get() == "XposedBridge"sv) {
+    if (!legacy_cleared_ && name.get() == "XposedBridge"sv) {
       ClearLegacyCallbacks(cls);
       legacy_cleared_ = true;
     }
   }
 
  private:
-  void ClearLegacyCallbacks(ScopedLocalRef<jclass>& cls) { ClearStaticFieldsAssignableTo(cls, collection_cls_); }
+  void ClearLegacyCallbacks(ScopedLocalRef<jclass>& cls) { ClearStaticFieldsAssignableTo(cls, collection_cls_, true); }
 
-  void ClearModernCallbacks(ScopedLocalRef<jclass>& cls) {
-    if (!key_set_view_cls_) return;
+  bool ClearModernCallbacks(ScopedLocalRef<jclass>& cls) {
+    if (!key_set_view_cls_) return false;
 
     bool is_xposed = false;
 
@@ -91,7 +105,7 @@ class XposedCallbackHelper {
       }
     } else {
       auto ifaces = JNI_Cast<jobjectArray>(JNI_CallNonvirtualObjectMethod(env_, cls, class_cls_, class_getInterfaces_));
-      if (!ifaces) return;
+      if (!ifaces) return false;
 
       for (auto& iface : ifaces) {
         if (!iface.get()) continue;
@@ -109,29 +123,69 @@ class XposedCallbackHelper {
     }
 
     if (is_xposed) {
-      ClearStaticFieldsAssignableTo(cls, key_set_view_cls_);
+      ClearStaticFieldsAssignableTo(cls, key_set_view_cls_, false);
+      return true;
     }
+    return false;
   }
 
-  void ClearStaticFieldsAssignableTo(ScopedLocalRef<jclass>& cls, ScopedLocalRef<jclass>& expected_type) {
+  void ClearStaticFieldsAssignableTo(ScopedLocalRef<jclass>& cls,
+                                     ScopedLocalRef<jclass>& expected_type,
+                                     bool has_wrapper) {
     if (!cls || !expected_type) return;
 
     auto fields =
         JNI_Cast<jobjectArray>(JNI_CallNonvirtualObjectMethod(env_, cls, class_cls_, class_getDeclaredFields_));
     if (!fields) return;
 
-    constexpr jint kAccStatic = 0x0008;
     for (auto& field : fields) {
       JNI_CallNonvirtualVoidMethod(env_, field.get(), field_cls_, field_setAccessible_, JNI_TRUE);
-      jint modifiers = JNI_CallNonvirtualIntMethod(env_, field.get(), field_cls_, field_getModifiers_);
+      auto modifiers = JNI_CallNonvirtualIntMethod(env_, field.get(), field_cls_, field_getModifiers_);
       if (!(modifiers & kAccStatic)) continue;
 
-      auto value = JNI_CallNonvirtualObjectMethod(env_, field.get(), field_cls_, field_get_, nullptr);
-      if (value && JNI_IsInstanceOf(env_, value, expected_type)) {
-        JNI_CallVoidMethod(env_, value, collection_clear_);
+      auto collection = JNI_CallNonvirtualObjectMethod(env_, field.get(), field_cls_, field_get_, nullptr);
+      if (collection && JNI_IsInstanceOf(env_, collection, expected_type)) {
+        auto iterator = JNI_CallObjectMethod(env_, collection, iterable_iterator_);
+        while (JNI_CallBooleanMethod(env_, iterator, iterator_hasNext_)) {
+          auto callback = JNI_CallObjectMethod(env_, iterator, iterator_next_);
+          if (has_wrapper) {
+            if (auto wrapped_callback = GetFirstNonNullInstanceField(callback)) {
+              callback.reset(wrapped_callback);
+            }
+          }
+          auto callback_cls = JNI_GetObjectClass(env_, callback);
+          auto callback_name_jstr =
+              JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env_, callback_cls, class_cls_, class_getName_));
+          auto callback_name = JUTFString{callback_name_jstr};
+          insert_ordered_unique(cleared_callbacks_, std::string{callback_name.get()});
+        }
+        JNI_CallVoidMethod(env_, collection, collection_clear_);
       }
     }
   }
+
+  jobject GetFirstNonNullInstanceField(ScopedLocalRef<jobject>& obj) {
+    auto cls = JNI_GetObjectClass(env_, obj);
+
+    auto fields =
+        JNI_Cast<jobjectArray>(JNI_CallNonvirtualObjectMethod(env_, cls, class_cls_, class_getDeclaredFields_));
+    if (!fields) return nullptr;
+
+    for (auto& field : fields) {
+      JNI_CallNonvirtualVoidMethod(env_, field.get(), field_cls_, field_setAccessible_, JNI_TRUE);
+      auto modifiers = JNI_CallNonvirtualIntMethod(env_, field.get(), field_cls_, field_getModifiers_);
+      if (modifiers & kAccStatic) continue;
+
+      auto instance = JNI_CallNonvirtualObjectMethod(env_, field.get(), field_cls_, field_get_, obj);
+      if (instance) {
+        return instance.release();
+      }
+    }
+
+    return nullptr;
+  }
+
+  static constexpr jint kAccStatic = 0x0008;
 
   JNIEnv* env_;
   ScopedLocalRef<jclass> class_cls_;
@@ -141,12 +195,16 @@ class XposedCallbackHelper {
   ScopedLocalRef<jclass> xposed_interface_cls_;
 
   jmethodID class_getDeclaredFields_;
+  jmethodID class_getName_;
   jmethodID class_getSimpleName_;
   jmethodID class_getInterfaces_;
   jmethodID field_setAccessible_;
   jmethodID field_get_;
   jmethodID field_getModifiers_;
   jmethodID collection_clear_;
+  jmethodID iterable_iterator_;
+  jmethodID iterator_hasNext_;
+  jmethodID iterator_next_;
 
   bool legacy_cleared_{false};
   bool modern_cleared_{false};
@@ -358,20 +416,25 @@ static void RemapExecutableSegmentsForArt(JavaVM* vm) {
   raw_close(fd);
 }
 
+static jobjectArray ToStringArray(JNIEnv* env, std::vector<std::string>& vec) {
+  auto string_cls = JNI_FindClass(env, "java/lang/String");
+  auto arr = JNI_NewObjectArray(env, static_cast<jsize>(vec.size()), string_cls, nullptr);
+  jsize i = 0;
+  for (const auto& s : vec) {
+    auto jstr = JNI_NewStringUTF(env, s.c_str());
+    arr[i++] = jstr.get();
+  }
+  vec.clear();
+  return arr.release();
+}
+
 extern "C" {
 JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_getUnhookedMethods([[maybe_unused]] JNIEnv* env,
                                                                                     jclass) {
 #ifdef USE_SPANNABLE_STRING_BUILDER
   return nullptr;
 #else
-  auto string_cls = JNI_FindClass(env, "java/lang/String");
-  auto arr = JNI_NewObjectArray(env, static_cast<jsize>(unhooked_methods_.size()), string_cls, nullptr);
-  jsize i = 0;
-  for (const auto& s : unhooked_methods_) {
-    auto jstr = JNI_NewStringUTF(env, s.c_str());
-    arr[i++] = jstr.get();
-  }
-  return arr.release();
+  return ToStringArray(env, unhooked_methods_);
 #endif
 }
 
@@ -385,6 +448,10 @@ JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_getUnhookedMethodLis
 #else
   return nullptr;
 #endif
+}
+
+JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_getClearedCallbacks(JNIEnv* env, jclass) {
+  return ToStringArray(env, cleared_callbacks_);
 }
 
 JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_getFlags(JNIEnv*, jclass) {

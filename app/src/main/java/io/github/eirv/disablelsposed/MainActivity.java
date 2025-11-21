@@ -24,10 +24,20 @@ public class MainActivity extends Activity {
     var methodList = Native.getUnhookedMethodList();
     if (methodList == null) {
       var methods = Native.getUnhookedMethods();
-      methodList = new ArrayList<>(methods.length);
-      methodList.addAll(Arrays.asList(methods));
+      methodList = new ArrayList<>(Arrays.asList(methods));
     }
+
     var flags = Native.getFlags();
+    var clearedCallbacks = Native.getClearedCallbacks();
+
+    var clearedCallbacksHtml = new StringBuilder();
+    if (clearedCallbacks.length != 0) {
+      for (var callback : clearedCallbacks) {
+        clearedCallbacksHtml.append('\n');
+        clearedCallbacksHtml.append(callback);
+      }
+      clearedCallbacksHtml.append('\n');
+    }
 
     var success = getString(R.string.success);
     var failure = getString(R.string.failure);
@@ -36,6 +46,8 @@ public class MainActivity extends Activity {
                 R.string.message,
                 (flags & 1) != 0 ? success : failure,
                 (flags & (1 << 1)) != 0 ? success : failure,
+                clearedCallbacks.length,
+                clearedCallbacksHtml.toString(),
                 methodList.size())
             .replace("\n", "<br/>");
 

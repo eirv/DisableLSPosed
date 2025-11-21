@@ -12,4 +12,6 @@ public class Native {
   public static native String[] getUnhookedMethods();
 
   public static native ArrayList<CharSequence> getUnhookedMethodList();
+
+  public static native String[] getClearedCallbacks();
 }
