@@ -444,6 +444,7 @@ JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_getUnhookedMethodLis
   if (!unhooked_method_list_) return nullptr;
   auto list = env->NewLocalRef(unhooked_method_list_);
   env->DeleteGlobalRef(unhooked_method_list_);
+  unhooked_method_list_ = nullptr;
   return list;
 #else
   return nullptr;
