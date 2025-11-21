@@ -16,7 +16,7 @@ android {
     defaultConfig {
         applicationId = "io.github.eirv.disablelsposed"
         minSdk = 33
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 10003
         versionName = "1.3"
 
