@@ -14,4 +14,6 @@ public class Native {
   public static native ArrayList<CharSequence> getUnhookedMethodList();
 
   public static native String[] getClearedCallbacks();
+
+  public static native String getFrameworkName();
 }

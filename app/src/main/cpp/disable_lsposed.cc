@@ -33,6 +33,7 @@ static std::vector<std::string> unhooked_methods_{};
 #endif
 
 static std::vector<std::string> cleared_callbacks_{};
+static auto framework_name_ = "LSPosed"s;
 
 static bool is_lsposed_disabled_{};
 static bool is_art_restored_{};
@@ -104,39 +105,45 @@ class XposedCallbackHelper {
         is_xposed = true;
       }
     } else {
-      auto ifaces = JNI_Cast<jobjectArray>(JNI_CallNonvirtualObjectMethod(env_, cls, class_cls_, class_getInterfaces_));
-      if (!ifaces) return false;
+      auto interfaces =
+          JNI_Cast<jobjectArray>(JNI_CallNonvirtualObjectMethod(env_, cls, class_cls_, class_getInterfaces_));
+      if (!interfaces) return false;
 
-      for (auto& iface : ifaces) {
-        if (!iface.get()) continue;
+      for (auto& interface : interfaces) {
+        if (!interface.get()) continue;
 
-        auto jstr = JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env_, iface, class_cls_, class_getSimpleName_));
+        auto jstr =
+            JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env_, interface, class_cls_, class_getSimpleName_));
         if (!jstr) continue;
-        auto iface_name = JUTFString{jstr};
+        auto interface_name = JUTFString{jstr};
 
-        if (iface_name.get() == "XposedInterface"sv) {
-          xposed_interface_cls_.reset(reinterpret_cast<jclass>(iface.release()));
+        if (interface_name.get() == "XposedInterface"sv) {
+          xposed_interface_cls_.reset(reinterpret_cast<jclass>(interface.release()));
           is_xposed = true;
           break;
         }
       }
     }
 
-    if (is_xposed) {
-      ClearStaticFieldsAssignableTo(cls, key_set_view_cls_, false);
+    if (is_xposed && ClearStaticFieldsAssignableTo(cls, key_set_view_cls_, false)) {
+      if (auto framework_name = GetFrameworkName(cls); !framework_name.empty()) {
+        framework_name_ = framework_name;
+      }
       return true;
     }
     return false;
   }
 
-  void ClearStaticFieldsAssignableTo(ScopedLocalRef<jclass>& cls,
+  bool ClearStaticFieldsAssignableTo(ScopedLocalRef<jclass>& cls,
                                      ScopedLocalRef<jclass>& expected_type,
                                      bool has_wrapper) {
-    if (!cls || !expected_type) return;
+    if (!cls || !expected_type) return false;
 
     auto fields =
         JNI_Cast<jobjectArray>(JNI_CallNonvirtualObjectMethod(env_, cls, class_cls_, class_getDeclaredFields_));
-    if (!fields) return;
+    if (!fields) return false;
+
+    auto cleared = false;
 
     for (auto& field : fields) {
       JNI_CallNonvirtualVoidMethod(env_, field.get(), field_cls_, field_setAccessible_, JNI_TRUE);
@@ -145,6 +152,7 @@ class XposedCallbackHelper {
 
       auto collection = JNI_CallNonvirtualObjectMethod(env_, field.get(), field_cls_, field_get_, nullptr);
       if (collection && JNI_IsInstanceOf(env_, collection, expected_type)) {
+        cleared = true;
         auto iterator = JNI_CallObjectMethod(env_, collection, iterable_iterator_);
         while (JNI_CallBooleanMethod(env_, iterator, iterator_hasNext_)) {
           auto callback = JNI_CallObjectMethod(env_, iterator, iterator_next_);
@@ -161,6 +169,46 @@ class XposedCallbackHelper {
         }
         JNI_CallVoidMethod(env_, collection, collection_clear_);
       }
+    }
+
+    return cleared;
+  }
+
+  std::string GetFrameworkName(ScopedLocalRef<jclass>& cls) {
+    auto get_framework_name_mid = JNI_GetMethodID(env_, cls, "getFrameworkName", "()Ljava/lang/String;");
+    if (!get_framework_name_mid) return {};
+
+    auto get_framework_version_mid = JNI_GetMethodID(env_, cls, "getFrameworkVersion", "()Ljava/lang/String;");
+    if (!get_framework_version_mid) return {};
+
+    auto get_framework_version_code_mid = JNI_GetMethodID(env_, cls, "getFrameworkVersionCode", "()J");
+    if (!get_framework_version_code_mid) return {};
+
+    auto xposed_module = ScopedLocalRef{env_, env_->AllocObject(cls.get())};
+    if (!xposed_module) return {};
+
+    auto name_jstr =
+        JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env_, xposed_module, cls, get_framework_name_mid));
+    auto version_jstr =
+        JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env_, xposed_module, cls, get_framework_version_mid));
+    auto version_code = JNI_CallNonvirtualLongMethod(env_, xposed_module, cls, get_framework_version_code_mid);
+
+    if (name_jstr && version_jstr) {
+      auto name = JUTFString{name_jstr};
+      auto version = JUTFString{version_jstr};
+      std::array<char, 1024> buffer{};
+      snprintf(buffer.data(),
+               buffer.size(),
+               "%s %s (%lld)",
+               name.get(),
+               version.get(),
+               static_cast<long long>(version_code));
+      return buffer.data();
+    } else if (name_jstr) {
+      auto name = JUTFString{name_jstr};
+      return name.get();
+    } else {
+      return {};
     }
   }
 
@@ -449,6 +497,10 @@ JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_getUnhookedMethodLis
 #else
   return nullptr;
 #endif
+}
+
+JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_getFrameworkName(JNIEnv* env, jclass) {
+  return env->NewStringUTF(framework_name_.c_str());
 }
 
 JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_getClearedCallbacks(JNIEnv* env, jclass) {

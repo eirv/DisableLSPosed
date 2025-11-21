@@ -44,6 +44,7 @@ public class MainActivity extends Activity {
     var message =
         getString(
                 R.string.message,
+                Native.getFrameworkName(),
                 (flags & 1) != 0 ? success : failure,
                 (flags & (1 << 1)) != 0 ? success : failure,
                 clearedCallbacks.length,
