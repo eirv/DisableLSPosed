@@ -3,12 +3,12 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <application
-        android:appComponentFactory=".AppFactory"
+        android:appComponentFactory="${applicationId}.AppFactory"
         android:label="DisableLSPosed"
         android:theme="@android:style/Theme.DeviceDefault"
         tools:ignore="MissingApplicationIcon">
         <activity
-            android:name=".MainActivity"
+            android:name="MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

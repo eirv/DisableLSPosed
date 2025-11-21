@@ -1,11 +1,17 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
 }
 
 android {
     namespace = "io.github.eirv.disablelsposed"
-    compileSdk = 35
     ndkVersion = "29.0.14206865"
+
+    compileSdk {
+        version = release(36)
+    }
 
     defaultConfig {
         applicationId = "io.github.eirv.disablelsposed"
@@ -25,7 +31,7 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -39,6 +45,13 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+    kotlin {
+        target {
+            compilerOptions {
+                jvmTarget = JvmTarget.JVM_11
+            }
+        }
     }
     externalNativeBuild {
         cmake {
