@@ -25,8 +25,12 @@ dependencyResolutionManagement {
     }
     google()
     mavenCentral()
+    maven("https://jitpack.io")
+    maven("https://api.xposed.info/")
   }
 }
 
 rootProject.name = "DisableLSPosed"
 include(":app")
+include(":module")
+

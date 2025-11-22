@@ -2,9 +2,13 @@
 agp = "8.13.1"
 kotlin = "2.2.21"
 cxx = "29.0.13599879-beta2"
+xposed-api = "82"
+xposed-newapi = "55efdf9"
 
 [libraries]
 cxx = { group = "org.lsposed.libcxx", name = "libcxx", version.ref = "cxx" }
+xposed-api = { group = "de.robv.android.xposed", name = "api", version.ref = "xposed-api" }
+xposed-newapi = { group = "io.github.libxposed", name = "api", version.ref = "xposed-newapi" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
