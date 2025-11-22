@@ -471,8 +471,8 @@ static jobjectArray ToStringArray(JNIEnv* env, std::vector<std::string>& vec) {
 }
 
 extern "C" {
-JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_getUnhookedMethods([[maybe_unused]] JNIEnv* env,
-                                                                                    jclass) {
+JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_nGetUnhookedMethods([[maybe_unused]] JNIEnv* env,
+                                                                                     jclass) {
 #ifdef USE_SPANNABLE_STRING_BUILDER
   return nullptr;
 #else
@@ -480,8 +480,8 @@ JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_getUnhookedMeth
 #endif
 }
 
-JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_getUnhookedMethodList([[maybe_unused]] JNIEnv* env,
-                                                                                  jclass) {
+JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_nGetUnhookedMethodList([[maybe_unused]] JNIEnv* env,
+                                                                                   jclass) {
 #ifdef USE_SPANNABLE_STRING_BUILDER
   if (!unhooked_method_list_) return nullptr;
   auto list = env->NewLocalRef(unhooked_method_list_);
@@ -493,15 +493,15 @@ JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_getUnhookedMethodLis
 #endif
 }
 
-JNIEXPORT jstring Java_io_github_eirv_disablelsposed_Native_getFrameworkName(JNIEnv* env, jclass) {
+JNIEXPORT jstring Java_io_github_eirv_disablelsposed_Native_nGetFrameworkName(JNIEnv* env, jclass) {
   return env->NewStringUTF(framework_name_.c_str());
 }
 
-JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_getClearedCallbacks(JNIEnv* env, jclass) {
+JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_nGetClearedCallbacks(JNIEnv* env, jclass) {
   return ToStringArray(env, cleared_callbacks_);
 }
 
-JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_getFlags(JNIEnv*, jclass) {
+JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_nGetFlags(JNIEnv*, jclass) {
   jint flags = 0;
   if (is_lsposed_disabled_) flags |= 1 << 0;
   if (is_art_restored_) flags |= 1 << 1;
