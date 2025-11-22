@@ -24,46 +24,47 @@ enum class ColorScheme : uint32_t {
   kDescriptorArrow = 0xFFFF0000u
 };
 
+struct Modifier {
+  static constexpr jint SYNTHETIC = 0x1000;
+};
+
+struct Spanned {
+  static constexpr jint SPAN_EXCLUSIVE_EXCLUSIVE = 0x21;
+};
+
 // ============ JNI CACHE ============
 // A small singleton that stores global refs and method IDs for fast calls.
 struct JniCache {
   bool initialized = false;
 
   // classes
-  jclass spannableStringBuilderCls = nullptr;  // android.text.SpannableStringBuilder
-  jclass foregroundColorSpanCls = nullptr;     // android.text.style.ForegroundColorSpan
-  jclass classCls = nullptr;                   // java.lang.Class
-  jclass stringCls = nullptr;                  // java.lang.String
-  jclass modifierCls = nullptr;                // java.lang.reflect.Modifier
+  jclass SpannableStringBuilder_class = nullptr;  // android.text.SpannableStringBuilder
+  jclass ForegroundColorSpan_class = nullptr;     // android.text.style.ForegroundColorSpan
+  jclass Class_class = nullptr;                   // java.lang.Class
 
   // primitive TYPE class objects (global refs)
-  jobject booleanTYPE = nullptr;
-  jobject byteTYPE = nullptr;
-  jobject shortTYPE = nullptr;
-  jobject charTYPE = nullptr;
-  jobject intTYPE = nullptr;
-  jobject floatTYPE = nullptr;
-  jobject longTYPE = nullptr;
-  jobject doubleTYPE = nullptr;
-  jobject voidTYPE = nullptr;
+  jobject Boolean_TYPE = nullptr;
+  jobject Byte_TYPE = nullptr;
+  jobject Short_TYPE = nullptr;
+  jobject Character_TYPE = nullptr;
+  jobject Integer_TYPE = nullptr;
+  jobject Float_TYPE = nullptr;
+  jobject Long_TYPE = nullptr;
+  jobject Double_TYPE = nullptr;
+  jobject Void_TYPE = nullptr;
 
   // methods / constructors
-  jmethodID ssb_ctor = nullptr;     // SpannableStringBuilder()
-  jmethodID ssb_append = nullptr;   // append(String)
-  jmethodID ssb_length = nullptr;   // length()
-  jmethodID ssb_setSpan = nullptr;  // setSpan(Object, int, int, int)
+  jmethodID SpannableStringBuilder_init = nullptr;     // SpannableStringBuilder()
+  jmethodID SpannableStringBuilder_append = nullptr;   // append(String)
+  jmethodID SpannableStringBuilder_length = nullptr;   // length()
+  jmethodID SpannableStringBuilder_setSpan = nullptr;  // setSpan(Object, int, int, int)
 
-  jmethodID fcs_ctor = nullptr;  // ForegroundColorSpan(int)
+  jmethodID ForegroundColorSpan_init = nullptr;  // ForegroundColorSpan(int)
 
-  jmethodID class_isPrimitive = nullptr;  // Class.isPrimitive()
-  jmethodID class_isSynthetic = nullptr;  // Class.isSynthetic()
-  jmethodID class_isArray = nullptr;      // Class.isArray()
-  jmethodID class_getName = nullptr;      // Class.getName()
-
-  jfieldID modifier_SYNTHETIC = nullptr;  // Modifier.SYNTHETIC int value
-
-  // flags
-  jint spanExclusiveExclusive = 0;  // Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+  jmethodID Class_isPrimitive = nullptr;  // Class.isPrimitive()
+  jmethodID Class_isSynthetic = nullptr;  // Class.isSynthetic()
+  jmethodID Class_isArray = nullptr;      // Class.isArray()
+  jmethodID Class_getName = nullptr;      // Class.getName()
 
   // mutex for thread-safe init
   std::once_flag initFlag;
@@ -79,9 +80,7 @@ struct JniCache {
       jclass local_ssb = env->FindClass("android/text/SpannableStringBuilder");
       jclass local_fcs = env->FindClass("android/text/style/ForegroundColorSpan");
       jclass local_class = env->FindClass("java/lang/Class");
-      jclass local_string = env->FindClass("java/lang/String");
-      jclass local_modifier = env->FindClass("java/lang/reflect/Modifier");
-      if (!local_ssb || !local_fcs || !local_class || !local_string || !local_modifier) {
+      if (!local_ssb || !local_fcs || !local_class) {
         // If you want logging, add ALOG here. For brevity, we'll assert.
         env->ExceptionClear();
         assert(false && "Failed to find required Java classes");
@@ -89,103 +88,67 @@ struct JniCache {
       }
 
       // promote to global refs
-      spannableStringBuilderCls = (jclass)env->NewGlobalRef(local_ssb);
-      foregroundColorSpanCls = (jclass)env->NewGlobalRef(local_fcs);
-      classCls = (jclass)env->NewGlobalRef(local_class);
-      stringCls = (jclass)env->NewGlobalRef(local_string);
-      modifierCls = (jclass)env->NewGlobalRef(local_modifier);
+      SpannableStringBuilder_class = local_ssb;
+      ForegroundColorSpan_class = local_fcs;
+      Class_class = local_class;
 
       // SpannableStringBuilder methods
-      ssb_ctor = env->GetMethodID(spannableStringBuilderCls, "<init>", "()V");
-      ssb_append = env->GetMethodID(
-          spannableStringBuilderCls, "append", "(Ljava/lang/CharSequence;)Landroid/text/SpannableStringBuilder;");
-      ssb_length = env->GetMethodID(spannableStringBuilderCls, "length", "()I");
-      ssb_setSpan = env->GetMethodID(spannableStringBuilderCls, "setSpan", "(Ljava/lang/Object;III)V");
-      if (!ssb_ctor || !ssb_append || !ssb_length || !ssb_setSpan) {
+      SpannableStringBuilder_init = env->GetMethodID(SpannableStringBuilder_class, "<init>", "()V");
+      SpannableStringBuilder_append = env->GetMethodID(
+          SpannableStringBuilder_class, "append", "(Ljava/lang/CharSequence;)Landroid/text/SpannableStringBuilder;");
+      SpannableStringBuilder_length = env->GetMethodID(SpannableStringBuilder_class, "length", "()I");
+      SpannableStringBuilder_setSpan =
+          env->GetMethodID(SpannableStringBuilder_class, "setSpan", "(Ljava/lang/Object;III)V");
+      if (!SpannableStringBuilder_init || !SpannableStringBuilder_append || !SpannableStringBuilder_length ||
+          !SpannableStringBuilder_setSpan) {
         env->ExceptionClear();
         assert(false && "Failed to find SpannableStringBuilder methods");
       }
 
       // ForegroundColorSpan ctor
-      fcs_ctor = env->GetMethodID(foregroundColorSpanCls, "<init>", "(I)V");
-      if (!fcs_ctor) {
+      ForegroundColorSpan_init = env->GetMethodID(ForegroundColorSpan_class, "<init>", "(I)V");
+      if (!ForegroundColorSpan_init) {
         env->ExceptionClear();
         assert(false && "Failed to find ForegroundColorSpan ctor");
       }
 
       // Class methods
-      class_isPrimitive = env->GetMethodID(classCls, "isPrimitive", "()Z");
-      class_isSynthetic = env->GetMethodID(classCls, "isSynthetic", "()Z");
-      class_isArray = env->GetMethodID(classCls, "isArray", "()Z");
-      class_getName = env->GetMethodID(classCls, "getName", "()Ljava/lang/String;");
-      if (!class_isPrimitive || !class_isSynthetic || !class_isArray || !class_getName) {
+      Class_isPrimitive = env->GetMethodID(Class_class, "isPrimitive", "()Z");
+      Class_isSynthetic = env->GetMethodID(Class_class, "isSynthetic", "()Z");
+      Class_isArray = env->GetMethodID(Class_class, "isArray", "()Z");
+      Class_getName = env->GetMethodID(Class_class, "getName", "()Ljava/lang/String;");
+      if (!Class_isPrimitive || !Class_isSynthetic || !Class_isArray || !Class_getName) {
         env->ExceptionClear();
         assert(false && "Failed to find Class methods");
       }
 
-      // Modifier SYNTHETIC flag
-      modifier_SYNTHETIC = env->GetStaticFieldID(modifierCls, "SYNTHETIC", "I");
-      if (modifier_SYNTHETIC) {
-        // good
-      } else {
-        env->ExceptionClear();
-        // If not present, default to 0 (rare). Keep it safe.
-        modifier_SYNTHETIC = nullptr;
-      }
-
-      // Spannable flag constant: Spannable.SPAN_EXCLUSIVE_EXCLUSIVE is an int constant on interface or class
-      // It's defined in android.text.Spanned as SPAN_EXCLUSIVE_EXCLUSIVE
-      jclass spannedCls = env->FindClass("android/text/Spanned");
-      if (spannedCls) {
-        jfieldID fid = env->GetStaticFieldID(spannedCls, "SPAN_EXCLUSIVE_EXCLUSIVE", "I");
-        if (fid) {
-          spanExclusiveExclusive = env->GetStaticIntField(spannedCls, fid);
-        } else {
-          env->ExceptionClear();
-          spanExclusiveExclusive = 0;
-        }
-        env->DeleteLocalRef(spannedCls);
-      } else {
-        env->ExceptionClear();
-        spanExclusiveExclusive = 0;
-      }
-
       // Cache primitive Class objects via wrapper TYPE fields
-      auto getPrimitiveTypeField = [&](const char* wrapperClass) -> jobject {
-        jclass tmp = env->FindClass(wrapperClass);
-        if (!tmp) {
+      auto getPrimitiveTypeField = [&](const char* wrapperClassName) -> jobject {
+        auto wrapperClass = env->FindClass(wrapperClassName);
+        if (!wrapperClass) {
           env->ExceptionClear();
           return nullptr;
         }
-        jfieldID fid = env->GetStaticFieldID(tmp, "TYPE", "Ljava/lang/Class;");
+        auto fid = env->GetStaticFieldID(wrapperClass, "TYPE", "Ljava/lang/Class;");
         if (!fid) {
           env->ExceptionClear();
-          env->DeleteLocalRef(tmp);
+          env->DeleteLocalRef(wrapperClass);
           return nullptr;
         }
-        jobject clsObj = env->GetStaticObjectField(tmp, fid);
-        jobject g = env->NewGlobalRef(clsObj);
-        env->DeleteLocalRef(tmp);
-        env->DeleteLocalRef(clsObj);
-        return g;
+        auto clsObj = env->GetStaticObjectField(wrapperClass, fid);
+        env->DeleteLocalRef(wrapperClass);
+        return clsObj;
       };
 
-      booleanTYPE = getPrimitiveTypeField("java/lang/Boolean");
-      byteTYPE = getPrimitiveTypeField("java/lang/Byte");
-      shortTYPE = getPrimitiveTypeField("java/lang/Short");
-      charTYPE = getPrimitiveTypeField("java/lang/Character");
-      intTYPE = getPrimitiveTypeField("java/lang/Integer");
-      floatTYPE = getPrimitiveTypeField("java/lang/Float");
-      longTYPE = getPrimitiveTypeField("java/lang/Long");
-      doubleTYPE = getPrimitiveTypeField("java/lang/Double");
-      voidTYPE = getPrimitiveTypeField("java/lang/Void");
-
-      // cleanup local refs
-      env->DeleteLocalRef(local_ssb);
-      env->DeleteLocalRef(local_fcs);
-      env->DeleteLocalRef(local_class);
-      env->DeleteLocalRef(local_string);
-      env->DeleteLocalRef(local_modifier);
+      Boolean_TYPE = getPrimitiveTypeField("java/lang/Boolean");
+      Byte_TYPE = getPrimitiveTypeField("java/lang/Byte");
+      Short_TYPE = getPrimitiveTypeField("java/lang/Short");
+      Character_TYPE = getPrimitiveTypeField("java/lang/Character");
+      Integer_TYPE = getPrimitiveTypeField("java/lang/Integer");
+      Float_TYPE = getPrimitiveTypeField("java/lang/Float");
+      Long_TYPE = getPrimitiveTypeField("java/lang/Long");
+      Double_TYPE = getPrimitiveTypeField("java/lang/Double");
+      Void_TYPE = getPrimitiveTypeField("java/lang/Void");
 
       initialized = true;
     });
@@ -194,46 +157,45 @@ struct JniCache {
   // utility destructor to release global refs when process unloads (not strictly required but hygienic)
   void destroy(JNIEnv* env) {
     if (!initialized) return;
-    env->DeleteGlobalRef(spannableStringBuilderCls);
-    env->DeleteGlobalRef(foregroundColorSpanCls);
-    env->DeleteGlobalRef(classCls);
-    env->DeleteGlobalRef(stringCls);
-    env->DeleteGlobalRef(modifierCls);
+    env->DeleteLocalRef(SpannableStringBuilder_class);
+    env->DeleteLocalRef(ForegroundColorSpan_class);
+    env->DeleteLocalRef(Class_class);
 
-    auto del = [&](jobject o) {
-      if (o) env->DeleteGlobalRef(o);
-    };
-    del(booleanTYPE);
-    del(byteTYPE);
-    del(shortTYPE);
-    del(charTYPE);
-    del(intTYPE);
-    del(floatTYPE);
-    del(longTYPE);
-    del(doubleTYPE);
-    del(voidTYPE);
+    env->DeleteLocalRef(Boolean_TYPE);
+    env->DeleteLocalRef(Byte_TYPE);
+    env->DeleteLocalRef(Short_TYPE);
+    env->DeleteLocalRef(Character_TYPE);
+    env->DeleteLocalRef(Integer_TYPE);
+    env->DeleteLocalRef(Float_TYPE);
+    env->DeleteLocalRef(Long_TYPE);
+    env->DeleteLocalRef(Double_TYPE);
+    env->DeleteLocalRef(Void_TYPE);
     initialized = false;
   }
 };
 
 // ============ Helper functions ============
 
-static inline jstring newJStringUtf(JNIEnv* env, const std::string& s) { return env->NewStringUTF(s.c_str()); }
-
 // Append a string with color span: obtains start = ssb.length(); ssb.append(str); create ForegroundColorSpan(color);
 // ssb.setSpan(span, start, start+len, flags)
 static void appendStringWithColor(JNIEnv* env, jobject ssb, const std::string& str, ColorScheme color) {
   JniCache& C = JniCache::instance();
   // start index
-  jint start = env->CallIntMethod(ssb, C.ssb_length);
-  jstring jstr = newJStringUtf(env, str);
+  jint start = env->CallNonvirtualIntMethod(ssb, C.SpannableStringBuilder_class, C.SpannableStringBuilder_length);
+  jstring jstr = env->NewStringUTF(str.c_str());
   // append
-  env->CallObjectMethod(ssb, C.ssb_append, jstr);
+  env->CallNonvirtualObjectMethod(ssb, C.SpannableStringBuilder_class, C.SpannableStringBuilder_append, jstr);
   // create span object
-  jobject spanObj = env->NewObject(C.foregroundColorSpanCls, C.fcs_ctor, static_cast<jint>(color));
+  jobject spanObj = env->NewObject(C.ForegroundColorSpan_class, C.ForegroundColorSpan_init, static_cast<jint>(color));
   // set span (what, start, end, flags)
   jint end = start + static_cast<jint>(str.size());
-  env->CallVoidMethod(ssb, C.ssb_setSpan, spanObj, start, end, C.spanExclusiveExclusive);
+  env->CallNonvirtualVoidMethod(ssb,
+                                C.SpannableStringBuilder_class,
+                                C.SpannableStringBuilder_setSpan,
+                                spanObj,
+                                start,
+                                end,
+                                Spanned::SPAN_EXCLUSIVE_EXCLUSIVE);
   // cleanup locals
   env->DeleteLocalRef(jstr);
   env->DeleteLocalRef(spanObj);
@@ -243,21 +205,16 @@ static void appendStringWithColor(JNIEnv* env, jobject ssb, const std::string& s
 static void appendPrimitiveDescriptor(JNIEnv* env, jobject ssb, jobject clazz) {
   JniCache& C = JniCache::instance();
   // compare clazz to cached TYPE objects
-  if (env->IsSameObject(clazz, C.booleanTYPE)) appendStringWithColor(env, ssb, "Z", ColorScheme::kDescriptorPrimitive);
-  else if (env->IsSameObject(clazz, C.byteTYPE))
-    appendStringWithColor(env, ssb, "B", ColorScheme::kDescriptorPrimitive);
-  else if (env->IsSameObject(clazz, C.shortTYPE))
-    appendStringWithColor(env, ssb, "S", ColorScheme::kDescriptorPrimitive);
-  else if (env->IsSameObject(clazz, C.charTYPE))
-    appendStringWithColor(env, ssb, "C", ColorScheme::kDescriptorPrimitive);
-  else if (env->IsSameObject(clazz, C.intTYPE)) appendStringWithColor(env, ssb, "I", ColorScheme::kDescriptorPrimitive);
-  else if (env->IsSameObject(clazz, C.floatTYPE))
-    appendStringWithColor(env, ssb, "F", ColorScheme::kDescriptorPrimitive);
-  else if (env->IsSameObject(clazz, C.longTYPE))
-    appendStringWithColor(env, ssb, "J", ColorScheme::kDescriptorPrimitive);
-  else if (env->IsSameObject(clazz, C.doubleTYPE))
-    appendStringWithColor(env, ssb, "D", ColorScheme::kDescriptorPrimitive);
-  else appendStringWithColor(env, ssb, "V", ColorScheme::kDescriptorPrimitive);  // void or fallback
+  auto name = "V";
+  if (env->IsSameObject(clazz, C.Boolean_TYPE)) name = "Z";
+  else if (env->IsSameObject(clazz, C.Byte_TYPE)) name = "B";
+  else if (env->IsSameObject(clazz, C.Short_TYPE)) name = "S";
+  else if (env->IsSameObject(clazz, C.Character_TYPE)) name = "C";
+  else if (env->IsSameObject(clazz, C.Integer_TYPE)) name = "I";
+  else if (env->IsSameObject(clazz, C.Float_TYPE)) name = "F";
+  else if (env->IsSameObject(clazz, C.Long_TYPE)) name = "J";
+  else if (env->IsSameObject(clazz, C.Double_TYPE)) name = "D";
+  appendStringWithColor(env, ssb, name, ColorScheme::kDescriptorPrimitive);
 }
 
 // Split a fully-qualified class name by '.' into parts without allocations per piece (returns vector<string>).
@@ -304,16 +261,16 @@ static void appendClassName(JNIEnv* env, jobject ssb, const std::string& classNa
 static void appendClassDescriptor(JNIEnv* env, jobject ssb, jobject clazz) {
   JniCache& C = JniCache::instance();
   // call isPrimitive()
-  jboolean isPrim = env->CallBooleanMethod(clazz, C.class_isPrimitive);
+  jboolean isPrim = env->CallNonvirtualBooleanMethod(clazz, C.Class_class, C.Class_isPrimitive);
   if (isPrim) {
     appendPrimitiveDescriptor(env, ssb, clazz);
     return;
   }
 
   // handle arrays / objects
-  jboolean isArray = env->CallBooleanMethod(clazz, C.class_isArray);
-  jboolean synthetic = env->CallBooleanMethod(clazz, C.class_isSynthetic);
-  auto nameStr = (jstring)env->CallObjectMethod(clazz, C.class_getName);
+  jboolean isArray = env->CallNonvirtualBooleanMethod(clazz, C.Class_class, C.Class_isArray);
+  jboolean synthetic = env->CallNonvirtualBooleanMethod(clazz, C.Class_class, C.Class_isSynthetic);
+  auto nameStr = reinterpret_cast<jstring>(env->CallNonvirtualObjectMethod(clazz, C.Class_class, C.Class_getName));
   const char* cname = env->GetStringUTFChars(nameStr, nullptr);
   std::string name(cname);
   env->ReleaseStringUTFChars(nameStr, cname);
@@ -368,7 +325,7 @@ jobject DescriptorBuilder::GetDescriptor(JNIEnv* env,
   C.init(env);
 
   // Create SpannableStringBuilder instance
-  jobject ssb = env->NewObject(C.spannableStringBuilderCls, C.ssb_ctor);
+  jobject ssb = env->NewObject(C.SpannableStringBuilder_class, C.SpannableStringBuilder_init);
 
   // append declaring class
   if (declaringClass != nullptr) {
@@ -384,14 +341,7 @@ jobject DescriptorBuilder::GetDescriptor(JNIEnv* env,
   env->ReleaseStringUTFChars(name, nameChars);
 
   // check synthetic modifier from Modifier.SYNTHETIC if available
-  bool methodSynthetic = false;
-  if (C.modifier_SYNTHETIC) {
-    jint synVal = env->GetStaticIntField(C.modifierCls, C.modifier_SYNTHETIC);
-    methodSynthetic = ((modifiers & synVal) != 0);
-  } else {
-    // fallback: user passed modifiers; if bit 0x00001000 maybe synthetic - but safer default false
-    methodSynthetic = ((modifiers & 0x00001000) != 0);
-  }
+  bool methodSynthetic = (modifiers & Modifier::SYNTHETIC) != 0;
   appendStringWithColor(
       env,
       ssb,
