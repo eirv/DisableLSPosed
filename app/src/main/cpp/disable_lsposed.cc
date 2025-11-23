@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <array>
+#include <cstdio>
 #include <cstring>
 #include <optional>
 #include <span>
@@ -39,10 +40,17 @@ static bool is_lsposed_disabled_{};
 static bool is_art_restored_{};
 
 template <typename T>
-static void insert_ordered_unique(std::vector<T>& vec, const T& value) {
+static void InsertUnique(std::vector<T>& vec, const T& value) {
   if (std::find(vec.begin(), vec.end(), value) == vec.end()) {
     vec.push_back(value);
   }
+}
+
+template <typename... Args>
+static std::string FormatString(std::string_view fmt, Args... args) {
+  std::array<char, 1024> buffer{};
+  snprintf(buffer.data(), buffer.size(), fmt.data(), args...);
+  return buffer.data();
 }
 
 class XposedCallbackHelper {
@@ -53,20 +61,27 @@ class XposedCallbackHelper {
         field_cls_{JNI_FindClass(env, "java/lang/reflect/Field")},
         collection_cls_{JNI_FindClass(env, "java/util/Collection")},
         key_set_view_cls_{JNI_FindClass(env, "java/util/concurrent/ConcurrentHashMap$KeySetView")},
+        system_cls_{JNI_FindClass(env, "java/lang/System")},
         xposed_interface_cls_{env} {
     class_getDeclaredFields_ = JNI_GetMethodID(env_, class_cls_, "getDeclaredFields", "()[Ljava/lang/reflect/Field;");
     class_getName_ = JNI_GetMethodID(env_, class_cls_, "getName", "()Ljava/lang/String;");
     class_getSimpleName_ = JNI_GetMethodID(env_, class_cls_, "getSimpleName", "()Ljava/lang/String;");
     class_getInterfaces_ = JNI_GetMethodID(env_, class_cls_, "getInterfaces", "()[Ljava/lang/Class;");
+
     field_setAccessible_ = JNI_GetMethodID(env_, field_cls_, "setAccessible", "(Z)V");
     field_get_ = JNI_GetMethodID(env_, field_cls_, "get", "(Ljava/lang/Object;)Ljava/lang/Object;");
     field_getModifiers_ = JNI_GetMethodID(env_, field_cls_, "getModifiers", "()I");
+
     collection_clear_ = JNI_GetMethodID(env_, collection_cls_, "clear", "()V");
+
     auto iterable_cls = JNI_FindClass(env, "java/lang/Iterable");
     iterable_iterator_ = JNI_GetMethodID(env, iterable_cls, "iterator", "()Ljava/util/Iterator;");
+
     auto iterator_cls = JNI_FindClass(env, "java/util/Iterator");
     iterator_hasNext_ = JNI_GetMethodID(env, iterator_cls, "hasNext", "()Z");
     iterator_next_ = JNI_GetMethodID(env, iterator_cls, "next", "()Ljava/lang/Object;");
+
+    system_identityHashCode_ = JNI_GetStaticMethodID(env, system_cls_, "identityHashCode", "(Ljava/lang/Object;)I");
   }
 
   void ClearXposedCallbacks(ScopedLocalRef<jclass>& cls) {
@@ -161,11 +176,7 @@ class XposedCallbackHelper {
               callback.reset(wrapped_callback);
             }
           }
-          auto callback_cls = JNI_GetObjectClass(env_, callback);
-          auto callback_name_jstr =
-              JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env_, callback_cls, class_cls_, class_getName_));
-          auto callback_name = JUTFString{callback_name_jstr};
-          insert_ordered_unique(cleared_callbacks_, std::string{callback_name.get()});
+          InsertUnique(cleared_callbacks_, GetObjectString(callback));
         }
         JNI_CallVoidMethod(env_, collection, collection_clear_);
       }
@@ -196,20 +207,21 @@ class XposedCallbackHelper {
     if (name_jstr && version_jstr) {
       auto name = JUTFString{name_jstr};
       auto version = JUTFString{version_jstr};
-      std::array<char, 1024> buffer{};
-      snprintf(buffer.data(),
-               buffer.size(),
-               "%s %s (%lld)",
-               name.get(),
-               version.get(),
-               static_cast<long long>(version_code));
-      return buffer.data();
+      return FormatString("%s %s (%lld)", name.get(), version.get(), static_cast<long long>(version_code));
     } else if (name_jstr) {
       auto name = JUTFString{name_jstr};
       return name.get();
     } else {
       return {};
     }
+  }
+
+  std::string GetObjectString(ScopedLocalRef<jobject>& obj) {
+    auto cls = JNI_GetObjectClass(env_, obj);
+    auto class_name_jstr = JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env_, cls, class_cls_, class_getName_));
+    auto class_name = JUTFString{class_name_jstr};
+    auto hash_code = JNI_CallStaticIntMethod(env_, system_cls_, system_identityHashCode_, obj);
+    return FormatString("%s@%x", class_name.get(), hash_code);
   }
 
   jobject GetFirstNonNullInstanceField(ScopedLocalRef<jobject>& obj) {
@@ -236,10 +248,13 @@ class XposedCallbackHelper {
   static constexpr jint kAccStatic = 0x0008;
 
   JNIEnv* env_;
+
   ScopedLocalRef<jclass> class_cls_;
   ScopedLocalRef<jclass> field_cls_;
   ScopedLocalRef<jclass> collection_cls_;
   ScopedLocalRef<jclass> key_set_view_cls_;
+  ScopedLocalRef<jclass> system_cls_;
+
   ScopedLocalRef<jclass> xposed_interface_cls_;
 
   jmethodID class_getDeclaredFields_;
@@ -253,6 +268,7 @@ class XposedCallbackHelper {
   jmethodID iterable_iterator_;
   jmethodID iterator_hasNext_;
   jmethodID iterator_next_;
+  jmethodID system_identityHashCode_;
 
   bool legacy_cleared_{false};
   bool modern_cleared_{false};
