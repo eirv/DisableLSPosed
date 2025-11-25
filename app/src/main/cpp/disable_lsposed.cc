@@ -195,7 +195,7 @@ class XposedCallbackHelper {
     auto get_framework_version_code_mid = JNI_GetMethodID(env_, cls, "getFrameworkVersionCode", "()J");
     if (!get_framework_version_code_mid) return {};
 
-    auto xposed_module = ScopedLocalRef{env_, env_->AllocObject(cls.get())};
+    auto xposed_module = JNI_SafeInvoke(env_, &JNIEnv::AllocObject, cls);
     if (!xposed_module) return {};
 
     auto name_jstr =
@@ -278,7 +278,7 @@ class Unsafe {
  public:
   explicit Unsafe(JNIEnv* env) : env_{env}, unsafe_{env, nullptr}, object_arr_{env, nullptr} {
     auto unsafe_cls = JNI_FindClass(env, "sun/misc/Unsafe");
-    unsafe_ = ScopedLocalRef{env, env->AllocObject(unsafe_cls.get())};
+    unsafe_ = JNI_SafeInvoke(env, &JNIEnv::AllocObject, unsafe_cls);
 
     object_arr_ = JNI_NewObjectArray(env, 1, JNI_FindClass(env, "java/lang/Object"), nullptr);
     auto array_base_offset_mid = JNI_GetMethodID(env, unsafe_cls, "arrayBaseOffset", "(Ljava/lang/Class;)I");
@@ -607,7 +607,7 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
 #else
   auto class_get_name_mid = JNI_GetMethodID(env, class_cls, "getName", "()Ljava/lang/String;");
 #endif
-  auto executable_cls = ScopedLocalRef{env, env->GetSuperclass(method_cls.get())};
+  auto executable_cls = JNI_SafeInvoke(env, &JNIEnv::GetSuperclass, method_cls);
 
   auto declaring_class_fid = JNI_GetFieldID(env, executable_cls, "declaringClass", "Ljava/lang/Class;");
   auto declaring_class_field = JNI_ToReflectedField(env, executable_cls, declaring_class_fid, JNI_FALSE);
