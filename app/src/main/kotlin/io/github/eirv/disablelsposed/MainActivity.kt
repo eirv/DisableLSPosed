@@ -26,6 +26,12 @@ class MainActivity : Activity() {
   private lateinit var clearedCallbacks: Array<String>
   private lateinit var frameworkName: String
 
+  companion object {
+    init {
+      Native.getFlags()
+    }
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 

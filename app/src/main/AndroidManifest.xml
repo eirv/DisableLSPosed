@@ -3,6 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <application
+        android:name="${applicationId}.App"
         android:appComponentFactory="${applicationId}.AppFactory"
         android:label="DisableLSPosed"
         android:theme="@android:style/Theme.DeviceDefault"
