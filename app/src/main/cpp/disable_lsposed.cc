@@ -326,13 +326,71 @@ static auto GetClassNameList(JNIEnv* env,
   return JNI_Cast<jobjectArray>(JNI_CallStaticObjectMethod(env, dex_file_cls, get_class_name_list_mid, cookie));
 }
 
-static std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>> FindLSPHookerClassAndLoader(
-    JNIEnv* env,
-    ScopedLocalRef<jclass>& dex_file_cls,
-    jmethodID get_class_loader_mid,
-    jfieldID dex_cache_fid,
-    jfieldID dex_file_fid,
-    jmethodID get_class_name_list_mid) {
+static std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>>
+FindLSPHookerClassAndLoaderByHookedMethod(
+    JNIEnv* env, jmethodID get_class_loader_mid, jfieldID art_method_fid, size_t art_method_size, Unsafe& unsafe) {
+  auto loaded_apk_cls = JNI_FindClass(env, "android/app/LoadedApk");
+  auto hooked_mid = JNI_GetMethodID(env,
+                                    loaded_apk_cls,
+                                    "<init>",
+                                    "(Landroid/app/ActivityThread;Landroid/content/pm/ApplicationInfo;Landroid/content/"
+                                    "res/CompatibilityInfo;Ljava/lang/ClassLoader;ZZZ)V");
+  if (!hooked_mid) {
+    hooked_mid = JNI_GetMethodID(env, loaded_apk_cls, "createOrUpdateClassLoaderLocked", "(Ljava/util/List;)V");
+    if (!hooked_mid) return {};
+  }
+  auto hooked_method = JNI_ToReflectedMethod(env, loaded_apk_cls, hooked_mid, JNI_FALSE);
+  auto art_method = JNI_GetLongField(env, hooked_method, art_method_fid);
+  auto entry_point = *reinterpret_cast<void**>(static_cast<uintptr_t>(art_method) + art_method_size - sizeof(void*));
+  void* hooker_art_method = nullptr;
+#if defined(__aarch64__)
+  if (auto code = static_cast<uint32_t*>(entry_point);
+      code[0] == 0x58000060 && (code[1] & 0xFFF00FFF) == 0xF8400010 && code[2] == 0xD61F0200) {
+    hooker_art_method = *reinterpret_cast<void**>(&code[3]);
+  }
+#elif defined(__arm__)
+  if (auto code = static_cast<uint32_t*>(entry_point); code[0] == 0xE59F0000 && (code[1] & 0xFFFFFF00) == 0xE590FF00) {
+    hooker_art_method = *reinterpret_cast<void**>(&code[2]);
+  }
+#elif defined(__i386__)
+  if (auto code = static_cast<uint8_t*>(entry_point);
+      code[0] == 0xB8 && code[5] == 0xFF && code[6] == 0x70 && code[8] == 0xC3) {
+    hooker_art_method = *reinterpret_cast<void**>(&code[1]);
+  }
+#elif defined(__x86_64__)
+  if (auto code = static_cast<uint8_t*>(entry_point);
+      code[0] == 0x48 && code[1] == 0xBF && code[10] == 0xFF && code[11] == 0x77 && code[13] == 0xC3) {
+    hooker_art_method = *reinterpret_cast<void**>(&code[2]);
+  }
+#elif defined(__riscv)
+  if (auto code = static_cast<uint32_t*>(entry_point);
+      code[0] == 0x00000517 && code[1] == 0x01053503 && (code[2] & 0xF00FFFFF) == 0x00053F83 && code[3] == 0x000F8067) {
+    hooker_art_method = *reinterpret_cast<void**>(&code[4]);
+  }
+#endif
+  if (!hooker_art_method) return {};
+  auto hooker_cls = unsafe.NewLocalRef<jclass>(*static_cast<uint32_t*>(hooker_art_method));
+  auto class_cls = JNI_GetObjectClass(env, hooker_cls);
+  auto get_declared_fields_mid = JNI_GetMethodID(env, class_cls, "getDeclaredFields", "()[Ljava/lang/reflect/Field;");
+  auto fields =
+      JNI_Cast<jobjectArray>(JNI_CallNonvirtualObjectMethod(env, hooker_cls, class_cls, get_declared_fields_mid));
+  if (!fields || fields.size() != 1) return {};
+  auto callback_fid = JNI_SafeInvoke(env, &JNIEnv::FromReflectedField, fields[0]);
+  if (!callback_fid) return {};
+  auto callback = JNI_GetStaticObjectField(env, hooker_cls, callback_fid);
+  if (!callback) return {};
+  auto callback_cls = JNI_GetObjectClass(env, callback);
+  auto class_loader = JNI_CallNonvirtualObjectMethod(env, callback_cls, class_cls, get_class_loader_mid);
+  return std::pair{std::move(callback_cls), std::move(class_loader)};
+}
+
+static std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>>
+FindLSPHookerClassAndLoaderByStackTrace(JNIEnv* env,
+                                        ScopedLocalRef<jclass>& dex_file_cls,
+                                        jmethodID get_class_loader_mid,
+                                        jfieldID dex_cache_fid,
+                                        jfieldID dex_file_fid,
+                                        jmethodID get_class_name_list_mid) {
   auto load_dex_mid = JNI_GetStaticMethodID(
       env, dex_file_cls, "loadDex", "(Ljava/lang/String;Ljava/lang/String;I)Ldalvik/system/DexFile;");
   env->CallStaticObjectMethod(dex_file_cls.get(), load_dex_mid, nullptr, nullptr, jint{0});
@@ -531,8 +589,47 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
     return JNI_ERR;
   }
 
+  Unsafe unsafe{env};
+
+  auto method_cls = JNI_FindClass(env, "java/lang/reflect/Method");
+  auto class_cls = JNI_GetObjectClass(env, method_cls);
+  auto method_get_name_mid = JNI_GetMethodID(env, method_cls, "getName", "()Ljava/lang/String;");
+#ifdef USE_SPANNABLE_STRING_BUILDER
+  auto method_get_parameter_types_mid = JNI_GetMethodID(env, method_cls, "getParameterTypes", "()[Ljava/lang/Class;");
+  auto method_get_return_type_mid = JNI_GetMethodID(env, method_cls, "getReturnType", "()Ljava/lang/Class;");
+#else
+  auto class_get_name_mid = JNI_GetMethodID(env, class_cls, "getName", "()Ljava/lang/String;");
+#endif
+  auto executable_cls = ScopedLocalRef{env, env->GetSuperclass(method_cls.get())};
+
+  auto declaring_class_fid = JNI_GetFieldID(env, executable_cls, "declaringClass", "Ljava/lang/Class;");
+  auto declaring_class_field = JNI_ToReflectedField(env, executable_cls, declaring_class_fid, JNI_FALSE);
+  auto field_cls = JNI_GetObjectClass(env, declaring_class_field);
+  auto offset_fid = JNI_GetFieldID(env, field_cls, "offset", "I");
+  auto declaring_class_off = JNI_GetIntField(env, declaring_class_field, offset_fid);
+
+  auto art_method_fid = JNI_GetFieldID(env, executable_cls, "artMethod", "J");
+  auto art_method_field = JNI_ToReflectedField(env, executable_cls, art_method_fid, JNI_FALSE);
+  auto art_method_off = JNI_GetIntField(env, art_method_field, offset_fid);
+
+  auto methods_fid = JNI_GetFieldID(env, class_cls, "methods", "J");
+  auto methods_field = JNI_ToReflectedField(env, class_cls, methods_fid, JNI_FALSE);
+  auto methods_off = JNI_GetIntField(env, methods_field, offset_fid);
+
+  auto method_cls_addr = unsafe.GetObjectAddress(method_cls.get());
+
+  size_t art_method_size = 0;
+  {
+    auto methods = static_cast<uintptr_t>(*reinterpret_cast<uint64_t*>(method_cls_addr + methods_off));
+    auto art_method = reinterpret_cast<uint32_t*>(methods + sizeof(size_t));
+    for (size_t i = 1; i < 32; ++i) {
+      if (art_method[i] != method_cls_addr) continue;
+      art_method_size = i * sizeof(uint32_t);
+      break;
+    }
+  }
+
   auto dex_file_cls = JNI_FindClass(env, "dalvik/system/DexFile");
-  auto class_cls = JNI_GetObjectClass(env, dex_file_cls);
   auto get_class_loader_mid = JNI_GetMethodID(env, class_cls, "getClassLoader", "()Ljava/lang/ClassLoader;");
   auto dex_cache_cls = JNI_FindClass(env, "java/lang/DexCache");
   auto dex_cache_fid = JNI_GetFieldID(env, class_cls, "dexCache", "Ljava/lang/Object;");
@@ -540,8 +637,10 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
   auto get_class_name_list_mid =
       JNI_GetStaticMethodID(env, dex_file_cls, "getClassNameList", "(Ljava/lang/Object;)[Ljava/lang/String;");
 
-  auto maybe_hooker = FindLSPHookerClassAndLoader(
-      env, dex_file_cls, get_class_loader_mid, dex_cache_fid, dex_file_fid, get_class_name_list_mid);
+  auto maybe_hooker =
+      FindLSPHookerClassAndLoaderByHookedMethod(env, get_class_loader_mid, art_method_fid, art_method_size, unsafe) ?:
+          FindLSPHookerClassAndLoaderByStackTrace(
+              env, dex_file_cls, get_class_loader_mid, dex_cache_fid, dex_file_fid, get_class_name_list_mid);
 
   if (maybe_hooker) {
     auto& [hooker_class, hooker_class_loader] = *maybe_hooker;
@@ -591,45 +690,6 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
 #endif
 
   if (auto global_ref_table = FindGlobalRefTable(vm)) {
-    Unsafe unsafe{env};
-
-    auto method_cls = JNI_FindClass(env, "java/lang/reflect/Method");
-    auto method_get_name_mid = JNI_GetMethodID(env, method_cls, "getName", "()Ljava/lang/String;");
-#ifdef USE_SPANNABLE_STRING_BUILDER
-    auto method_get_parameter_types_mid = JNI_GetMethodID(env, method_cls, "getParameterTypes", "()[Ljava/lang/Class;");
-    auto method_get_return_type_mid = JNI_GetMethodID(env, method_cls, "getReturnType", "()Ljava/lang/Class;");
-#else
-    auto class_get_name_mid = JNI_GetMethodID(env, class_cls, "getName", "()Ljava/lang/String;");
-#endif
-    auto executable_cls = ScopedLocalRef{env, env->GetSuperclass(method_cls.get())};
-
-    auto declaring_class_fid = JNI_GetFieldID(env, executable_cls, "declaringClass", "Ljava/lang/Class;");
-    auto declaring_class_field = JNI_ToReflectedField(env, executable_cls, declaring_class_fid, JNI_FALSE);
-    auto field_cls = JNI_GetObjectClass(env, declaring_class_field);
-    auto offset_fid = JNI_GetFieldID(env, field_cls, "offset", "I");
-    auto declaring_class_off = JNI_GetIntField(env, declaring_class_field, offset_fid);
-
-    auto art_method_fid = JNI_GetFieldID(env, executable_cls, "artMethod", "J");
-    auto art_method_field = JNI_ToReflectedField(env, executable_cls, art_method_fid, JNI_FALSE);
-    auto art_method_off = JNI_GetIntField(env, art_method_field, offset_fid);
-
-    auto methods_fid = JNI_GetFieldID(env, class_cls, "methods", "J");
-    auto methods_field = JNI_ToReflectedField(env, class_cls, methods_fid, JNI_FALSE);
-    auto methods_off = JNI_GetIntField(env, methods_field, offset_fid);
-
-    auto method_cls_addr = unsafe.GetObjectAddress(method_cls.get());
-
-    size_t art_method_size = 0;
-    {
-      auto methods = static_cast<uintptr_t>(*reinterpret_cast<uint64_t*>(method_cls_addr + methods_off));
-      auto art_method = reinterpret_cast<uint32_t*>(methods + sizeof(size_t));
-      for (size_t i = 1; i < 32; ++i) {
-        if (art_method[i] != method_cls_addr) continue;
-        art_method_size = i * sizeof(uint32_t);
-        break;
-      }
-    }
-
     auto compiler_cls = JNI_FindClass(env, "java/lang/Compiler");
     auto enable_mid = JNI_GetStaticMethodID(env, compiler_cls, "enable", "()V");
     auto stub_method = JNI_ToReflectedMethod(env, compiler_cls, enable_mid, JNI_TRUE);
