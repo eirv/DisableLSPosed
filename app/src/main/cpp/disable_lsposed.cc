@@ -327,8 +327,12 @@ static auto GetClassNameList(JNIEnv* env,
 }
 
 static std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>>
-FindLSPHookerClassAndLoaderByHookedMethod(
-    JNIEnv* env, jmethodID get_class_loader_mid, jfieldID art_method_fid, size_t art_method_size, Unsafe& unsafe) {
+FindFrameworkAPIClassAndClassLoaderByHookedMethod(JNIEnv* env,
+                                                  ScopedLocalRef<jclass>& class_cls,
+                                                  jmethodID get_class_loader_mid,
+                                                  jfieldID art_method_fid,
+                                                  size_t art_method_size,
+                                                  Unsafe& unsafe) {
   auto loaded_apk_cls = JNI_FindClass(env, "android/app/LoadedApk");
   auto hooked_mid = JNI_GetMethodID(env,
                                     loaded_apk_cls,
@@ -370,7 +374,6 @@ FindLSPHookerClassAndLoaderByHookedMethod(
 #endif
   if (!hooker_art_method) return {};
   auto hooker_cls = unsafe.NewLocalRef<jclass>(*static_cast<uint32_t*>(hooker_art_method));
-  auto class_cls = JNI_GetObjectClass(env, hooker_cls);
   auto get_declared_fields_mid = JNI_GetMethodID(env, class_cls, "getDeclaredFields", "()[Ljava/lang/reflect/Field;");
   auto fields =
       JNI_Cast<jobjectArray>(JNI_CallNonvirtualObjectMethod(env, hooker_cls, class_cls, get_declared_fields_mid));
@@ -385,12 +388,13 @@ FindLSPHookerClassAndLoaderByHookedMethod(
 }
 
 static std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>>
-FindLSPHookerClassAndLoaderByStackTrace(JNIEnv* env,
-                                        ScopedLocalRef<jclass>& dex_file_cls,
-                                        jmethodID get_class_loader_mid,
-                                        jfieldID dex_cache_fid,
-                                        jfieldID dex_file_fid,
-                                        jmethodID get_class_name_list_mid) {
+FindFrameworkAPIClassAndClassLoaderByStackTrace(JNIEnv* env,
+                                                ScopedLocalRef<jclass>& class_cls,
+                                                ScopedLocalRef<jclass>& dex_file_cls,
+                                                jmethodID get_class_loader_mid,
+                                                jfieldID dex_cache_fid,
+                                                jfieldID dex_file_fid,
+                                                jmethodID get_class_name_list_mid) {
   auto load_dex_mid = JNI_GetStaticMethodID(
       env, dex_file_cls, "loadDex", "(Ljava/lang/String;Ljava/lang/String;I)Ldalvik/system/DexFile;");
   env->CallStaticObjectMethod(dex_file_cls.get(), load_dex_mid, nullptr, nullptr, jint{0});
@@ -403,10 +407,9 @@ FindLSPHookerClassAndLoaderByStackTrace(JNIEnv* env,
   auto throwable_cls = JNI_FindClass(env, "java/lang/Throwable");
   auto backtrace_fid = JNI_GetFieldID(env, throwable_cls, "backtrace", "Ljava/lang/Object;");
   auto backtrace = JNI_Cast<jobjectArray>(JNI_GetObjectField(env, exception, backtrace_fid));
-  auto class_cls = JNI_GetObjectClass(env, throwable_cls);
   auto boot_class_loader = JNI_CallNonvirtualObjectMethod(env, throwable_cls, class_cls, get_class_loader_mid);
-  ScopedLocalRef<jclass> hooker_class{env};
-  ScopedLocalRef<jobject> hooker_class_loader{env};
+  ScopedLocalRef<jclass> framework_api_class{env};
+  ScopedLocalRef<jobject> framework_api_class_loader{env};
 
   for (jsize i = 2, len = static_cast<jsize>(backtrace.size()); i < len; ++i) {
     auto element = JNI_Cast<jclass>(backtrace[i]);
@@ -418,25 +421,25 @@ FindLSPHookerClassAndLoaderByStackTrace(JNIEnv* env,
       continue;
     }
 
-    if (!hooker_class_loader) {
-      hooker_class.reset(element.release());
-      hooker_class_loader.reset(class_loader.release());
+    if (!framework_api_class_loader) {
+      framework_api_class.reset(element.release());
+      framework_api_class_loader.reset(class_loader.release());
       continue;
     }
 
-    if (JNI_IsSameObject(env, class_loader, hooker_class_loader)) {
-      hooker_class.reset(element.release());
+    if (JNI_IsSameObject(env, class_loader, framework_api_class_loader)) {
+      framework_api_class.reset(element.release());
       continue;
     }
 
     auto class_names =
         GetClassNameList(env, element, dex_cache_fid, dex_file_fid, dex_file_cls, get_class_name_list_mid);
     if (class_names.size() == 1) {
-      return std::pair{std::move(hooker_class), std::move(hooker_class_loader)};
+      return std::pair{std::move(framework_api_class), std::move(framework_api_class_loader)};
     }
 
-    hooker_class.reset(element.release());
-    hooker_class_loader.reset(class_loader.release());
+    framework_api_class.reset(element.release());
+    framework_api_class_loader.reset(class_loader.release());
   }
 
   return std::nullopt;
@@ -637,20 +640,20 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
   auto get_class_name_list_mid =
       JNI_GetStaticMethodID(env, dex_file_cls, "getClassNameList", "(Ljava/lang/Object;)[Ljava/lang/String;");
 
-  auto maybe_hooker =
-      FindLSPHookerClassAndLoaderByHookedMethod(env, get_class_loader_mid, art_method_fid, art_method_size, unsafe) ?:
-          FindLSPHookerClassAndLoaderByStackTrace(
-              env, dex_file_cls, get_class_loader_mid, dex_cache_fid, dex_file_fid, get_class_name_list_mid);
+  auto maybe_framework_api =
+      FindFrameworkAPIClassAndClassLoaderByHookedMethod(env, class_cls, get_class_loader_mid, art_method_fid, art_method_size, unsafe) ?:
+          FindFrameworkAPIClassAndClassLoaderByStackTrace(
+              env, class_cls, dex_file_cls, get_class_loader_mid, dex_cache_fid, dex_file_fid, get_class_name_list_mid);
 
-  if (maybe_hooker) {
-    auto& [hooker_class, hooker_class_loader] = *maybe_hooker;
+  if (maybe_framework_api) {
+    auto& [framework_api_class, framework_api_class_loader] = *maybe_framework_api;
     XposedCallbackHelper helper{env};
 
     auto for_name_mid = JNI_GetStaticMethodID(
         env, class_cls, "forName", "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;");
 
     auto names =
-        GetClassNameList(env, hooker_class, dex_cache_fid, dex_file_fid, dex_file_cls, get_class_name_list_mid);
+        GetClassNameList(env, framework_api_class, dex_cache_fid, dex_file_fid, dex_file_cls, get_class_name_list_mid);
 
     auto native_methods = std::array{JNINativeMethod{
         "hookMethod",
@@ -660,7 +663,7 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
 
     for (auto& name : names) {
       auto current_class = JNI_Cast<jclass>(
-          JNI_CallStaticObjectMethod(env, class_cls, for_name_mid, name, JNI_FALSE, hooker_class_loader));
+          JNI_CallStaticObjectMethod(env, class_cls, for_name_mid, name, JNI_FALSE, framework_api_class_loader));
       if (!current_class) {
         continue;
       }
