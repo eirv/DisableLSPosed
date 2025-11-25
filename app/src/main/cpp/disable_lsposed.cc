@@ -326,6 +326,35 @@ static auto GetClassNameList(JNIEnv* env,
   return JNI_Cast<jobjectArray>(JNI_CallStaticObjectMethod(env, dex_file_cls, get_class_name_list_mid, cookie));
 }
 
+static void* GetLSPEntryMethod(void* entry_point) {
+#if defined(__aarch64__)
+  if (auto code = static_cast<uint32_t*>(entry_point);
+      code[0] == 0x58000060 && (code[1] & 0xFFF00FFF) == 0xF8400010 && code[2] == 0xD61F0200) {
+    return *reinterpret_cast<void**>(&code[3]);
+  }
+#elif defined(__arm__)
+  if (auto code = static_cast<uint32_t*>(entry_point); code[0] == 0xE59F0000 && (code[1] & 0xFFFFFF00) == 0xE590FF00) {
+    return *reinterpret_cast<void**>(&code[2]);
+  }
+#elif defined(__i386__)
+  if (auto code = static_cast<uint8_t*>(entry_point);
+      code[0] == 0xB8 && code[5] == 0xFF && code[6] == 0x70 && code[8] == 0xC3) {
+    return *reinterpret_cast<void**>(&code[1]);
+  }
+#elif defined(__x86_64__)
+  if (auto code = static_cast<uint8_t*>(entry_point);
+      code[0] == 0x48 && code[1] == 0xBF && code[10] == 0xFF && code[11] == 0x77 && code[13] == 0xC3) {
+    return *reinterpret_cast<void**>(&code[2]);
+  }
+#elif defined(__riscv)
+  if (auto code = static_cast<uint32_t*>(entry_point);
+      code[0] == 0x00000517 && code[1] == 0x01053503 && (code[2] & 0xF00FFFFF) == 0x00053F83 && code[3] == 0x000F8067) {
+    return *reinterpret_cast<void**>(&code[4]);
+  }
+#endif
+  return nullptr;
+}
+
 static std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>>
 FindFrameworkAPIClassAndClassLoaderByHookedMethod(JNIEnv* env,
                                                   ScopedLocalRef<jclass>& class_cls,
@@ -346,32 +375,7 @@ FindFrameworkAPIClassAndClassLoaderByHookedMethod(JNIEnv* env,
   auto hooked_method = JNI_ToReflectedMethod(env, loaded_apk_cls, hooked_mid, JNI_FALSE);
   auto art_method = JNI_GetLongField(env, hooked_method, art_method_fid);
   auto entry_point = *reinterpret_cast<void**>(static_cast<uintptr_t>(art_method) + art_method_size - sizeof(void*));
-  void* hooker_art_method = nullptr;
-#if defined(__aarch64__)
-  if (auto code = static_cast<uint32_t*>(entry_point);
-      code[0] == 0x58000060 && (code[1] & 0xFFF00FFF) == 0xF8400010 && code[2] == 0xD61F0200) {
-    hooker_art_method = *reinterpret_cast<void**>(&code[3]);
-  }
-#elif defined(__arm__)
-  if (auto code = static_cast<uint32_t*>(entry_point); code[0] == 0xE59F0000 && (code[1] & 0xFFFFFF00) == 0xE590FF00) {
-    hooker_art_method = *reinterpret_cast<void**>(&code[2]);
-  }
-#elif defined(__i386__)
-  if (auto code = static_cast<uint8_t*>(entry_point);
-      code[0] == 0xB8 && code[5] == 0xFF && code[6] == 0x70 && code[8] == 0xC3) {
-    hooker_art_method = *reinterpret_cast<void**>(&code[1]);
-  }
-#elif defined(__x86_64__)
-  if (auto code = static_cast<uint8_t*>(entry_point);
-      code[0] == 0x48 && code[1] == 0xBF && code[10] == 0xFF && code[11] == 0x77 && code[13] == 0xC3) {
-    hooker_art_method = *reinterpret_cast<void**>(&code[2]);
-  }
-#elif defined(__riscv)
-  if (auto code = static_cast<uint32_t*>(entry_point);
-      code[0] == 0x00000517 && code[1] == 0x01053503 && (code[2] & 0xF00FFFFF) == 0x00053F83 && code[3] == 0x000F8067) {
-    hooker_art_method = *reinterpret_cast<void**>(&code[4]);
-  }
-#endif
+  void* hooker_art_method = GetLSPEntryMethod(entry_point);
   if (!hooker_art_method) return {};
   auto hooker_cls = unsafe.NewLocalRef<jclass>(*static_cast<uint32_t*>(hooker_art_method));
   auto get_declared_fields_mid = JNI_GetMethodID(env, class_cls, "getDeclaredFields", "()[Ljava/lang/reflect/Field;");
@@ -625,7 +629,7 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
   {
     auto methods = static_cast<uintptr_t>(*reinterpret_cast<uint64_t*>(method_cls_addr + methods_off));
     auto art_method = reinterpret_cast<uint32_t*>(methods + sizeof(size_t));
-    for (size_t i = 1; i < 32; ++i) {
+    for (size_t i = 5; i < 32; ++i) {
       if (art_method[i] != method_cls_addr) continue;
       art_method_size = i * sizeof(uint32_t);
       break;
@@ -716,8 +720,12 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
         if (method[2] != reinterpret_cast<uint32_t*>(art_method)[2]) continue;
 
         auto access_flags = method[1];
-        memcpy(method, reinterpret_cast<void*>(art_method), art_method_size);
-        method[1] = access_flags;
+        if (!GetLSPEntryMethod(*reinterpret_cast<void**>(art_method + art_method_size - sizeof(void*)))) {
+          memcpy(method, reinterpret_cast<void*>(art_method), art_method_size);
+          method[1] = access_flags;
+        } else {
+          access_flags |= 0x1000 /* kAccSynthetic */;
+        }
 
         auto target_cls = ScopedLocalRef{env, unsafe.NewLocalRef<jclass>(target_class_addr)};
         JNI_SetLongField(env, stub_method, art_method_fid, reinterpret_cast<jlong>(method));
