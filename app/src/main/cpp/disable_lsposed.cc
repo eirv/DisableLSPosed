@@ -328,28 +328,47 @@ static auto GetClassNameList(JNIEnv* env,
 
 static void* GetLSPEntryMethod(void* entry_point) {
 #if defined(__aarch64__)
-  if (auto code = static_cast<uint32_t*>(entry_point);
-      code[0] == 0x58000060 && (code[1] & 0xFFF00FFF) == 0xF8400010 && code[2] == 0xD61F0200) {
-    return *reinterpret_cast<void**>(&code[3]);
+  auto code = static_cast<uint32_t*>(entry_point);
+  for (size_t i = 0; 8 > i; ++i) {
+    if (code[i] != 0x58000060) continue;
+    if ((code[i + 1] & 0xFFF00FFF) != 0xF8400010) continue;
+    if (code[i + 2] != 0xD61F0200) continue;
+    return *reinterpret_cast<void**>(&code[i + 3]);
   }
 #elif defined(__arm__)
-  if (auto code = static_cast<uint32_t*>(entry_point); code[0] == 0xE59F0000 && (code[1] & 0xFFFFFF00) == 0xE590FF00) {
-    return *reinterpret_cast<void**>(&code[2]);
+  auto code = static_cast<uint32_t*>(entry_point);
+  for (size_t i = 0; 8 > i; ++i) {
+    if (code[i] != 0xE59F0000) continue;
+    if ((code[i + 1] & 0xFFFFFF00) != 0xE590FF00) continue;
+    return *reinterpret_cast<void**>(&code[i + 2]);
   }
 #elif defined(__i386__)
-  if (auto code = static_cast<uint8_t*>(entry_point);
-      code[0] == 0xB8 && code[5] == 0xFF && code[6] == 0x70 && code[8] == 0xC3) {
-    return *reinterpret_cast<void**>(&code[1]);
+  auto code = static_cast<uint8_t*>(entry_point);
+  for (size_t i = 0; 32 > i; ++i) {
+    if (code[i] != 0xB8) continue;
+    if (code[i + 5] != 0xFF) continue;
+    if (code[i + 6] != 0x70) continue;
+    if (code[i + 8] != 0xC3) continue;
+    return *reinterpret_cast<void**>(&code[i + 1]);
   }
 #elif defined(__x86_64__)
-  if (auto code = static_cast<uint8_t*>(entry_point);
-      code[0] == 0x48 && code[1] == 0xBF && code[10] == 0xFF && code[11] == 0x77 && code[13] == 0xC3) {
-    return *reinterpret_cast<void**>(&code[2]);
+  auto code = static_cast<uint8_t*>(entry_point);
+  for (size_t i = 0; 32 > i; ++i) {
+    if (code[i] != 0x48) continue;
+    if (code[i + 1] != 0xBF) continue;
+    if (code[i + 10] != 0xFF) continue;
+    if (code[i + 11] != 0x77) continue;
+    if (code[i + 13] != 0xC3) continue;
+    return *reinterpret_cast<void**>(&code[i + 2]);
   }
 #elif defined(__riscv)
-  if (auto code = static_cast<uint32_t*>(entry_point);
-      code[0] == 0x00000517 && code[1] == 0x01053503 && (code[2] & 0xF00FFFFF) == 0x00053F83 && code[3] == 0x000F8067) {
-    return *reinterpret_cast<void**>(&code[4]);
+  auto code = static_cast<uint32_t*>(entry_point);
+  for (size_t i = 0; 8 > i; ++i) {
+    if (code[i] != 0x00000517) continue;
+    if (code[i + 1] != 0x01053503) continue;
+    if ((code[i + 2] & 0xF00FFFFF) != 0x00053F83) continue;
+    if (code[i + 3] != 0x000F8067) continue;
+    return *reinterpret_cast<void**>(&code[i + 4]);
   }
 #endif
   return nullptr;
