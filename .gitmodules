@@ -1,3 +1,6 @@
 [submodule "app/src/main/cpp/third-party/linux-syscall-support"]
 	path = app/src/main/cpp/third-party/linux-syscall-support
 	url = https://github.com/eirv/linux-syscall-support
+[submodule "app/src/main/cpp/third-party/xDL"]
+	path = app/src/main/cpp/third-party/xDL
+	url = https://github.com/hexhacking/xDL

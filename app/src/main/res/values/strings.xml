@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="app_name" translatable="false">"DisableLSPosed"</string>
     <string name="message">"
 Attempt to disable %1$s: %2$s
 

@@ -18,36 +18,42 @@
 
 #include "descriptor_builder.h"
 #include "file_reader.h"
-#include "jni_helper.hpp"
+#include "gc_root.h"
+#include "jni_helper.h"
 #include "linux_syscall_support.h"
-
-#define USE_SPANNABLE_STRING_BUILDER 1
+#include "xdl.h"
 
 using namespace std::string_literals;
 using namespace std::string_view_literals;
 using namespace lsplant;
 
+using art::LambdaRootVisitor;
+using art::RootInfo;
+using art::RootVisitor;
+using art::mirror::Object;
+
+namespace {
 #ifdef USE_SPANNABLE_STRING_BUILDER
-static jobject unhooked_method_list_{};
+auto unhooked_method_list_ = jobject{};
 #else
-static std::vector<std::string> unhooked_methods_{};
+auto unhooked_methods_ = std::vector<std::string>{};
 #endif
 
-static std::vector<std::string> cleared_callbacks_{};
-static auto framework_name_ = "LSPosed"s;
+auto cleared_callbacks_ = std::vector<std::string>{};
+auto framework_name_ = "LSPosed"s;
 
-static bool is_lsposed_disabled_{};
-static bool is_art_restored_{};
+auto is_lsposed_disabled_ = bool{};
+auto is_art_restored_ = bool{};
 
 template <typename T>
-static void InsertUnique(std::vector<T>& vec, const T& value) {
+void InsertUnique(std::vector<T>& vec, const T& value) {
   if (std::find(vec.begin(), vec.end(), value) == vec.end()) {
     vec.push_back(value);
   }
 }
 
 template <typename... Args>
-static std::string FormatString(std::string_view fmt, Args... args) {
+auto FormatString(std::string_view fmt, Args... args) -> std::string {
   std::array<char, 1024> buffer{};
   snprintf(buffer.data(), buffer.size(), fmt.data(), args...);
   return buffer.data();
@@ -110,7 +116,7 @@ class XposedCallbackHelper {
  private:
   void ClearLegacyCallbacks(ScopedLocalRef<jclass>& cls) { ClearStaticFieldsAssignableTo(cls, collection_cls_, true); }
 
-  bool ClearModernCallbacks(ScopedLocalRef<jclass>& cls) {
+  auto ClearModernCallbacks(ScopedLocalRef<jclass>& cls) -> bool {
     if (!key_set_view_cls_) return false;
 
     bool is_xposed = false;
@@ -149,9 +155,9 @@ class XposedCallbackHelper {
     return false;
   }
 
-  bool ClearStaticFieldsAssignableTo(ScopedLocalRef<jclass>& cls,
+  auto ClearStaticFieldsAssignableTo(ScopedLocalRef<jclass>& cls,
                                      ScopedLocalRef<jclass>& expected_type,
-                                     bool has_wrapper) {
+                                     bool has_wrapper) -> bool {
     if (!cls || !expected_type) return false;
 
     auto fields =
@@ -185,7 +191,7 @@ class XposedCallbackHelper {
     return cleared;
   }
 
-  std::string GetFrameworkName(ScopedLocalRef<jclass>& cls) {
+  auto GetFrameworkName(ScopedLocalRef<jclass>& cls) -> std::string {
     auto get_framework_name_mid = JNI_GetMethodID(env_, cls, "getFrameworkName", "()Ljava/lang/String;");
     if (!get_framework_name_mid) return {};
 
@@ -195,7 +201,7 @@ class XposedCallbackHelper {
     auto get_framework_version_code_mid = JNI_GetMethodID(env_, cls, "getFrameworkVersionCode", "()J");
     if (!get_framework_version_code_mid) return {};
 
-    auto xposed_module = JNI_SafeInvoke(env_, &JNIEnv::AllocObject, cls);
+    auto xposed_module = JNI_AllocObject(env_, cls);
     if (!xposed_module) return {};
 
     auto name_jstr =
@@ -216,7 +222,7 @@ class XposedCallbackHelper {
     }
   }
 
-  std::string GetObjectString(ScopedLocalRef<jobject>& obj) {
+  auto GetObjectString(ScopedLocalRef<jobject>& obj) -> std::string {
     auto cls = JNI_GetObjectClass(env_, obj);
     auto class_name_jstr = JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env_, cls, class_cls_, class_getName_));
     auto class_name = JUTFString{class_name_jstr};
@@ -224,7 +230,7 @@ class XposedCallbackHelper {
     return FormatString("%s@%x", class_name.get(), hash_code);
   }
 
-  jobject GetFirstNonNullInstanceField(ScopedLocalRef<jobject>& obj) {
+  auto GetFirstNonNullInstanceField(ScopedLocalRef<jobject>& obj) -> jobject {
     auto cls = JNI_GetObjectClass(env_, obj);
 
     auto fields =
@@ -278,7 +284,7 @@ class Unsafe {
  public:
   explicit Unsafe(JNIEnv* env) : env_{env}, unsafe_{env, nullptr}, object_arr_{env, nullptr} {
     auto unsafe_cls = JNI_FindClass(env, "sun/misc/Unsafe");
-    unsafe_ = JNI_SafeInvoke(env, &JNIEnv::AllocObject, unsafe_cls);
+    unsafe_ = JNI_AllocObject(env, unsafe_cls);
 
     object_arr_ = JNI_NewObjectArray(env, 1, JNI_FindClass(env, "java/lang/Object"), nullptr);
     auto array_base_offset_mid = JNI_GetMethodID(env, unsafe_cls, "arrayBaseOffset", "(Ljava/lang/Class;)I");
@@ -312,12 +318,12 @@ class Unsafe {
   jint object_arr_base_off_;
 };
 
-static auto GetClassNameList(JNIEnv* env,
-                             ScopedLocalRef<jclass>& cls,
-                             jfieldID dex_cache_fid,
-                             jfieldID dex_file_fid,
-                             ScopedLocalRef<jclass>& dex_file_cls,
-                             jmethodID get_class_name_list_mid) {
+auto GetClassNameList(JNIEnv* env,
+                      ScopedLocalRef<jclass>& cls,
+                      jfieldID dex_cache_fid,
+                      jfieldID dex_file_fid,
+                      ScopedLocalRef<jclass>& dex_file_cls,
+                      jmethodID get_class_name_list_mid) {
   auto dex_cache = JNI_GetObjectField(env, cls, dex_cache_fid);
   auto native_dex_file = JNI_GetLongField(env, dex_cache, dex_file_fid);
   auto cookie = JNI_NewLongArray(env, 2);
@@ -326,7 +332,7 @@ static auto GetClassNameList(JNIEnv* env,
   return JNI_Cast<jobjectArray>(JNI_CallStaticObjectMethod(env, dex_file_cls, get_class_name_list_mid, cookie));
 }
 
-static void* GetLSPEntryMethod(void* entry_point) {
+auto GetLSPEntryMethod(void* entry_point) -> void* {
 #if defined(__aarch64__)
   auto code = static_cast<uint32_t*>(entry_point);
   for (size_t i = 0; 8 > i; ++i) {
@@ -374,13 +380,13 @@ static void* GetLSPEntryMethod(void* entry_point) {
   return nullptr;
 }
 
-static std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>>
-FindFrameworkAPIClassAndClassLoaderByHookedMethod(JNIEnv* env,
-                                                  ScopedLocalRef<jclass>& class_cls,
-                                                  jmethodID get_class_loader_mid,
-                                                  jfieldID art_method_fid,
-                                                  size_t art_method_size,
-                                                  Unsafe& unsafe) {
+auto FindFrameworkAPIClassAndClassLoaderByHookedMethod(JNIEnv* env,
+                                                       ScopedLocalRef<jclass>& class_cls,
+                                                       jmethodID get_class_loader_mid,
+                                                       jfieldID art_method_fid,
+                                                       size_t art_method_size,
+                                                       Unsafe& unsafe)
+    -> std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>> {
   auto loaded_apk_cls = JNI_FindClass(env, "android/app/LoadedApk");
   auto hooked_mid = JNI_GetMethodID(env,
                                     loaded_apk_cls,
@@ -394,14 +400,14 @@ FindFrameworkAPIClassAndClassLoaderByHookedMethod(JNIEnv* env,
   auto hooked_method = JNI_ToReflectedMethod(env, loaded_apk_cls, hooked_mid, JNI_FALSE);
   auto art_method = JNI_GetLongField(env, hooked_method, art_method_fid);
   auto entry_point = *reinterpret_cast<void**>(static_cast<uintptr_t>(art_method) + art_method_size - sizeof(void*));
-  void* hooker_art_method = GetLSPEntryMethod(entry_point);
+  auto hooker_art_method = GetLSPEntryMethod(entry_point);
   if (!hooker_art_method) return {};
   auto hooker_cls = unsafe.NewLocalRef<jclass>(*static_cast<uint32_t*>(hooker_art_method));
   auto get_declared_fields_mid = JNI_GetMethodID(env, class_cls, "getDeclaredFields", "()[Ljava/lang/reflect/Field;");
   auto fields =
       JNI_Cast<jobjectArray>(JNI_CallNonvirtualObjectMethod(env, hooker_cls, class_cls, get_declared_fields_mid));
   if (!fields || fields.size() != 1) return {};
-  auto callback_fid = JNI_SafeInvoke(env, &JNIEnv::FromReflectedField, fields[0]);
+  auto callback_fid = JNI_FromReflectedField(env, fields[0]);
   if (!callback_fid) return {};
   auto callback = JNI_GetStaticObjectField(env, hooker_cls, callback_fid);
   if (!callback) return {};
@@ -410,14 +416,14 @@ FindFrameworkAPIClassAndClassLoaderByHookedMethod(JNIEnv* env,
   return std::pair{std::move(callback_cls), std::move(class_loader)};
 }
 
-static std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>>
-FindFrameworkAPIClassAndClassLoaderByStackTrace(JNIEnv* env,
-                                                ScopedLocalRef<jclass>& class_cls,
-                                                ScopedLocalRef<jclass>& dex_file_cls,
-                                                jmethodID get_class_loader_mid,
-                                                jfieldID dex_cache_fid,
-                                                jfieldID dex_file_fid,
-                                                jmethodID get_class_name_list_mid) {
+auto FindFrameworkAPIClassAndClassLoaderByStackTrace(JNIEnv* env,
+                                                     ScopedLocalRef<jclass>& class_cls,
+                                                     ScopedLocalRef<jclass>& dex_file_cls,
+                                                     jmethodID get_class_loader_mid,
+                                                     jfieldID dex_cache_fid,
+                                                     jfieldID dex_file_fid,
+                                                     jmethodID get_class_name_list_mid)
+    -> std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>> {
   auto load_dex_mid = JNI_GetStaticMethodID(
       env, dex_file_cls, "loadDex", "(Ljava/lang/String;Ljava/lang/String;I)Ldalvik/system/DexFile;");
   env->CallStaticObjectMethod(dex_file_cls.get(), load_dex_mid, nullptr, nullptr, jint{0});
@@ -468,18 +474,18 @@ FindFrameworkAPIClassAndClassLoaderByStackTrace(JNIEnv* env,
   return std::nullopt;
 }
 
-static auto CollectIndirectRefTables() {
+auto CollectIndirectRefTables() {
   static constexpr auto kTargetName = "[anon:dalvik-indirect ref table]"sv;
-  [[maybe_unused]] static constexpr auto kNameOffset64 = 25 + sizeof(uint64_t) * 6;
 
   std::unordered_map<uintptr_t, uintptr_t> tables;
 
   for (auto& line : io::FileReader{"/proc/self/maps"}) {
 #ifdef __LP64__
-    if (line.size() <= kNameOffset64) continue;
-    if (line.substr(kNameOffset64) != kTargetName) continue;
+    static constexpr auto kNameOffset = 25 + sizeof(void*) * 6;
+    if (line.size() <= kNameOffset) continue;
+    if (line.substr(kNameOffset) != kTargetName) continue;
 #else
-    if (line.find(kTargetName) == std::string_view::npos) continue;
+    if (!line.contains(kTargetName)) continue;
 #endif
     char* tmp = nullptr;
     auto start = strtoul(line.data(), &tmp, 16);
@@ -489,36 +495,61 @@ static auto CollectIndirectRefTables() {
   return tables;
 }
 
-static std::optional<std::span<uint32_t>> FindGlobalRefTable(JavaVM* vm) {
+auto FindGlobalRefTable(JavaVM* vm) -> std::optional<std::span<uint32_t>> {
   auto indirect_ref_tables = CollectIndirectRefTables();
   if (indirect_ref_tables.empty()) {
     return {};
   }
-
-  uint32_t* global_ref_table = nullptr;
-  size_t global_ref_count = 0;
 
   auto mem = reinterpret_cast<uintptr_t*>(vm + 1);
   for (size_t i = 0; i < 512; ++i) {
     if (mem[i + 1] != 2 /* IndirectRefKind::kGlobal */) continue;
     if (mem[i + 2] > 1'000'000) continue;
     if (mem[i + 3] > 1'000'000) continue;
+    if (mem[i + 3] < mem[i + 2]) continue;
 
     if (std::find_if(indirect_ref_tables.begin(), indirect_ref_tables.end(), [addr = mem[i]](const auto& p) {
           return p.first <= addr && addr < p.second;
         }) == indirect_ref_tables.end())
       continue;
 
-    global_ref_table = reinterpret_cast<uint32_t*>(mem[i]);
-    global_ref_count = mem[i + 2];
-    break;
+    auto global_ref_table = reinterpret_cast<uint32_t*>(mem[i]);
+    auto global_ref_count = static_cast<size_t>(mem[i + 2]);
+
+    if (!global_ref_table || !global_ref_count) continue;
+    return std::span{global_ref_table, global_ref_count};
   }
 
-  if (!global_ref_table) return {};
-  return std::span{global_ref_table, global_ref_count};
+  return {};
 }
 
-static void RemapExecutableSegmentsForArt(JavaVM* vm) {
+auto xdl_sym(void* handle, const char* symbol) {
+  auto addr = ::xdl_sym(handle, symbol, nullptr);
+  return addr ?: xdl_dsym(handle, symbol, nullptr);
+}
+
+void VisitJNIGlobalReferences(JavaVM* vm, JNIEnv* env, RootVisitor* visitor) {
+  if (auto art = xdl_open("libart.so", XDL_DEFAULT)) {
+    auto visit_roots = reinterpret_cast<void (*)(JavaVM*, RootVisitor*)>(
+        xdl_sym(art, "_ZN3art9JavaVMExt10VisitRootsEPNS_11RootVisitorE"));
+    xdl_close(art);
+    if (visit_roots) {
+      visit_roots(vm, visitor);
+      return;
+    }
+  }
+
+  if (auto global_ref_table = FindGlobalRefTable(vm)) {
+    for (size_t i = 0; i < global_ref_table->size(); ++i) {
+      auto ref = global_ref_table->data()[i * 2 + 1];
+      if (ref == 0) continue;
+      auto object = reinterpret_cast<Object*>(static_cast<uintptr_t>(ref));
+      visitor->VisitRoot(&object, RootInfo{art::kRootJNIGlobal});
+    }
+  }
+}
+
+void RemapExecutableSegmentsForArt(JavaVM* vm) {
   Dl_info info{};
   if (!dladdr(reinterpret_cast<void*>(vm->functions->GetEnv), &info)) return;
 
@@ -558,7 +589,7 @@ static void RemapExecutableSegmentsForArt(JavaVM* vm) {
   raw_close(fd);
 }
 
-static jobjectArray ToStringArray(JNIEnv* env, std::vector<std::string>& vec) {
+auto ToStringArray(JNIEnv* env, std::vector<std::string>& vec) {
   auto string_cls = JNI_FindClass(env, "java/lang/String");
   auto arr = JNI_NewObjectArray(env, static_cast<jsize>(vec.size()), string_cls, nullptr);
   jsize i = 0;
@@ -569,19 +600,22 @@ static jobjectArray ToStringArray(JNIEnv* env, std::vector<std::string>& vec) {
   vec.clear();
   return arr.release();
 }
+}  // namespace
 
 extern "C" {
-JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_nGetUnhookedMethods([[maybe_unused]] JNIEnv* env,
-                                                                                     jclass) {
+[[gnu::visibility("default")]]
+auto Java_io_github_eirv_disablelsposed_Native_nGetUnhookedMethods([[maybe_unused]] JNIEnv* env, jclass)
+    -> jobjectArray {
 #ifdef USE_SPANNABLE_STRING_BUILDER
-  return nullptr;
+  auto vec = std::vector{"Released"s};
+  return ToStringArray(env, vec);
 #else
   return ToStringArray(env, unhooked_methods_);
 #endif
 }
 
-JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_nGetUnhookedMethodList([[maybe_unused]] JNIEnv* env,
-                                                                                   jclass) {
+[[gnu::visibility("default")]]
+auto Java_io_github_eirv_disablelsposed_Native_nGetUnhookedMethodList([[maybe_unused]] JNIEnv* env, jclass) -> jobject {
 #ifdef USE_SPANNABLE_STRING_BUILDER
   if (!unhooked_method_list_) return nullptr;
   auto list = env->NewLocalRef(unhooked_method_list_);
@@ -593,15 +627,18 @@ JNIEXPORT jobject Java_io_github_eirv_disablelsposed_Native_nGetUnhookedMethodLi
 #endif
 }
 
-JNIEXPORT jstring Java_io_github_eirv_disablelsposed_Native_nGetFrameworkName(JNIEnv* env, jclass) {
+[[gnu::visibility("default")]]
+auto Java_io_github_eirv_disablelsposed_Native_nGetFrameworkName(JNIEnv* env, jclass) -> jstring {
   return env->NewStringUTF(framework_name_.c_str());
 }
 
-JNIEXPORT jobjectArray Java_io_github_eirv_disablelsposed_Native_nGetClearedCallbacks(JNIEnv* env, jclass) {
+[[gnu::visibility("default")]]
+auto Java_io_github_eirv_disablelsposed_Native_nGetClearedCallbacks(JNIEnv* env, jclass) -> jobjectArray {
   return ToStringArray(env, cleared_callbacks_);
 }
 
-JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_nGetFlags(JNIEnv*, jclass) {
+[[gnu::visibility("default")]]
+auto Java_io_github_eirv_disablelsposed_Native_nGetFlags(JNIEnv*, jclass) -> jint {
   jint flags = 0;
   if (is_lsposed_disabled_) flags |= 1 << 0;
   if (is_art_restored_) flags |= 1 << 1;
@@ -609,7 +646,7 @@ JNIEXPORT jint Java_io_github_eirv_disablelsposed_Native_nGetFlags(JNIEnv*, jcla
 }
 }
 
-jint JNI_OnLoad(JavaVM* vm, void*) {
+auto JNI_OnLoad(JavaVM* vm, void*) -> jint {
   JNIEnv* env;
   if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
     return JNI_ERR;
@@ -626,7 +663,7 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
 #else
   auto class_get_name_mid = JNI_GetMethodID(env, class_cls, "getName", "()Ljava/lang/String;");
 #endif
-  auto executable_cls = JNI_SafeInvoke(env, &JNIEnv::GetSuperclass, method_cls);
+  auto executable_cls = JNI_GetSuperclass(env, method_cls);
 
   auto declaring_class_fid = JNI_GetFieldID(env, executable_cls, "declaringClass", "Ljava/lang/Class;");
   auto declaring_class_field = JNI_ToReflectedField(env, executable_cls, declaring_class_fid, JNI_FALSE);
@@ -715,65 +752,65 @@ jint JNI_OnLoad(JavaVM* vm, void*) {
   DescriptorBuilder db{env};
 #endif
 
-  if (auto global_ref_table = FindGlobalRefTable(vm)) {
-    auto compiler_cls = JNI_FindClass(env, "java/lang/Compiler");
-    auto enable_mid = JNI_GetStaticMethodID(env, compiler_cls, "enable", "()V");
-    auto stub_method = JNI_ToReflectedMethod(env, compiler_cls, enable_mid, JNI_TRUE);
+  auto compiler_cls = JNI_FindClass(env, "java/lang/Compiler");
+  auto enable_mid = JNI_GetStaticMethodID(env, compiler_cls, "enable", "()V");
+  auto stub_method = JNI_ToReflectedMethod(env, compiler_cls, enable_mid, JNI_TRUE);
 
-    for (size_t i = 0; i < global_ref_table->size(); ++i) {
-      auto ref = global_ref_table->data()[i * 2 + 1];
-      if (ref == 0) continue;
-      auto ref_class_addr = *reinterpret_cast<uint32_t*>(ref);
-      if (ref_class_addr != method_cls_addr) continue;
+  auto visitor = LambdaRootVisitor{[&](auto object, auto) {
+    auto ref = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(object));
+    if (ref == 0) return;
+    auto ref_class_addr = *reinterpret_cast<uint32_t*>(ref);
+    if (ref_class_addr != method_cls_addr) return;
 
-      auto art_method = static_cast<uintptr_t>(*reinterpret_cast<uint64_t*>(ref + art_method_off));
-      auto target_class_addr = *reinterpret_cast<uint32_t*>(art_method);
-      auto declaring_class_addr = *reinterpret_cast<uint32_t*>(ref + declaring_class_off);
-      if (target_class_addr == declaring_class_addr) continue;
+    auto art_method = static_cast<uintptr_t>(*reinterpret_cast<uint64_t*>(ref + art_method_off));
+    auto target_class_addr = *reinterpret_cast<uint32_t*>(art_method);
+    auto declaring_class_addr = *reinterpret_cast<uint32_t*>(ref + declaring_class_off);
+    if (target_class_addr == declaring_class_addr) return;
 
-      auto methods = static_cast<uintptr_t>(*reinterpret_cast<uint64_t*>(target_class_addr + methods_off));
-      auto method_count = *reinterpret_cast<size_t*>(methods);
+    auto methods = static_cast<uintptr_t>(*reinterpret_cast<uint64_t*>(target_class_addr + methods_off));
+    auto method_count = *reinterpret_cast<size_t*>(methods);
 
-      for (size_t j = 0; j < method_count; ++j) {
-        auto method = reinterpret_cast<uint32_t*>(j * art_method_size + methods + sizeof(size_t));
-        if (method[2] != reinterpret_cast<uint32_t*>(art_method)[2]) continue;
+    for (size_t j = 0; j < method_count; ++j) {
+      auto method = reinterpret_cast<uint32_t*>(j * art_method_size + methods + sizeof(size_t));
+      if (method[2] != reinterpret_cast<uint32_t*>(art_method)[2]) continue;
 
-        auto access_flags = method[1];
-        if (!GetLSPEntryMethod(*reinterpret_cast<void**>(art_method + art_method_size - sizeof(void*)))) {
-          memcpy(method, reinterpret_cast<void*>(art_method), art_method_size);
-          method[1] = access_flags;
-        } else {
-          access_flags |= 0x1000 /* kAccSynthetic */;
-        }
+      auto access_flags = method[1];
+      if (!GetLSPEntryMethod(*reinterpret_cast<void**>(art_method + art_method_size - sizeof(void*)))) {
+        memcpy(method, reinterpret_cast<void*>(art_method), art_method_size);
+        method[1] = access_flags;
+      } else {
+        access_flags |= 0x1000 /* kAccSynthetic */;
+      }
 
-        auto target_cls = ScopedLocalRef{env, unsafe.NewLocalRef<jclass>(target_class_addr)};
-        JNI_SetLongField(env, stub_method, art_method_fid, reinterpret_cast<jlong>(method));
-        auto target_method_name_jstr =
-            JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env, stub_method, method_cls, method_get_name_mid));
+      auto target_cls = ScopedLocalRef{env, unsafe.NewLocalRef<jclass>(target_class_addr)};
+      JNI_SetLongField(env, stub_method, art_method_fid, reinterpret_cast<jlong>(method));
+      auto target_method_name_jstr =
+          JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env, stub_method, method_cls, method_get_name_mid));
 
 #ifdef USE_SPANNABLE_STRING_BUILDER
-        auto target_parameter_types =
-            JNI_CallNonvirtualObjectMethod(env, stub_method, method_cls, method_get_parameter_types_mid);
-        auto target_return_type =
-            JNI_CallNonvirtualObjectMethod(env, stub_method, method_cls, method_get_return_type_mid);
-        auto descriptor = DescriptorBuilder::GetDescriptor(env,
-                                                           target_cls.get(),
-                                                           target_method_name_jstr.get(),
-                                                           reinterpret_cast<jobjectArray>(target_parameter_types.get()),
-                                                           reinterpret_cast<jclass>(target_return_type.get()),
-                                                           static_cast<jint>(access_flags));
-        JNI_CallNonvirtualBooleanMethod(env, array_list, array_list_cls, array_list_add_mid, descriptor);
+      auto target_parameter_types =
+          JNI_CallNonvirtualObjectMethod(env, stub_method, method_cls, method_get_parameter_types_mid);
+      auto target_return_type =
+          JNI_CallNonvirtualObjectMethod(env, stub_method, method_cls, method_get_return_type_mid);
+      auto descriptor = DescriptorBuilder::GetDescriptor(env,
+                                                         target_cls.get(),
+                                                         target_method_name_jstr.get(),
+                                                         reinterpret_cast<jobjectArray>(target_parameter_types.get()),
+                                                         reinterpret_cast<jclass>(target_return_type.get()),
+                                                         static_cast<jint>(access_flags));
+      JNI_CallBooleanMethod(env, array_list, array_list_add_mid, descriptor);
+      env->DeleteLocalRef(descriptor);
 #else
-        auto target_cls_name_jstr =
-            JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env, target_cls, class_cls, class_get_name_mid));
-        auto target_cls_name = JUTFString{target_cls_name_jstr};
-        auto target_method_name = JUTFString{target_method_name_jstr};
-        unhooked_methods_.push_back(target_cls_name.get() + "::"s + target_method_name.get());
+      auto target_cls_name_jstr =
+          JNI_Cast<jstring>(JNI_CallNonvirtualObjectMethod(env, target_cls, class_cls, class_get_name_mid));
+      auto target_cls_name = JUTFString{target_cls_name_jstr};
+      auto target_method_name = JUTFString{target_method_name_jstr};
+      unhooked_methods_.push_back(target_cls_name.get() + "::"s + target_method_name.get());
 #endif
-        break;
-      }
+      break;
     }
-  }
+  }};
+  VisitJNIGlobalReferences(vm, env, &visitor);
 
   RemapExecutableSegmentsForArt(vm);
 

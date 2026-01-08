@@ -6,12 +6,12 @@ class DescriptorBuilder {
  public:
   explicit DescriptorBuilder(JNIEnv* env);
 
-  static jobject GetDescriptor(JNIEnv* env,
-                               jobject declaringClass,
-                               jstring name,
-                               jobjectArray parameterTypes,
-                               jobject returnType,
-                               jint modifiers);
+  static auto GetDescriptor(JNIEnv* env,
+                            jobject declaringClass,
+                            jstring name,
+                            jobjectArray parameterTypes,
+                            jobject returnType,
+                            jint modifiers) -> jobject;
 
   ~DescriptorBuilder();
 

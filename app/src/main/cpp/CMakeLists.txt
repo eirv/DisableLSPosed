@@ -29,13 +29,19 @@ link_libraries(cxx::cxx)
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
-        disable_lsposed.cc
-        descriptor_builder.cc)
+        main.cc
+        descriptor_builder.cc
+        third-party/xDL/xdl/src/main/cpp/xdl.c
+        third-party/xDL/xdl/src/main/cpp/xdl_iterate.c
+        third-party/xDL/xdl/src/main/cpp/xdl_linker.c
+        third-party/xDL/xdl/src/main/cpp/xdl_lzma.c
+        third-party/xDL/xdl/src/main/cpp/xdl_util.c)
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         .
         third-party/linux-syscall-support
-        third-party/lsplant)
+        third-party/lsplant
+        third-party/xDL/xdl/src/main/cpp/include)
 
 # Specifies libraries CMake should link to your target library. You
 # can link libraries from various origins, such as libraries defined in this
@@ -43,6 +49,8 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_link_libraries(${CMAKE_PROJECT_NAME}
         # List libraries link to the target library
         log dl)
+
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE USE_SPANNABLE_STRING_BUILDER)
 
 target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE
         -Wall
@@ -62,4 +70,5 @@ target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
         -Wl,-exclude-libs,ALL
         -Wl,--as-needed
         -Wl,--gc-sections
-        -Wl,--icf=all)
+        -Wl,--icf=all
+        -Wl,-z,max-page-size=16384)
