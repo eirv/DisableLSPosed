@@ -16,7 +16,8 @@
 
 namespace io {
 
-template <typename Reader>
+namespace internal {
+template <class Reader>
 class BaseIterator {
  public:
   using iterator_category = std::input_iterator_tag;
@@ -28,7 +29,7 @@ class BaseIterator {
   using const_pointer = const value_type*;
 
   BaseIterator() = default;
-  explicit BaseIterator(Reader* reader) : reader_{reader} { ++(*this); }
+  explicit BaseIterator(Reader* reader) : reader_{reader} { operator++(); }
 
   auto operator*() const noexcept -> const_reference { return current_; }
   auto operator*() noexcept -> reference { return current_; }
@@ -37,17 +38,12 @@ class BaseIterator {
 
   auto operator++() noexcept -> auto& {
     if (!reader_) return *this;
-    auto ret = **reader_;
+    auto ret = reader_->operator++();
     if (!ret) {
       reader_ = nullptr;
       current_ = {};
     } else {
-      using Ret = decltype(std::declval<Reader>().operator*());
-      if constexpr (std::is_same_v<Ret, std::optional<value_type>>) {
-        current_ = *ret;
-      } else {
-        current_ = ret;
-      }
+      current_ = std::move(*ret);
     }
     return *this;
   }
@@ -58,33 +54,54 @@ class BaseIterator {
     return tmp;
   }
 
-  bool operator==(const BaseIterator& other) const noexcept { return reader_ == other.reader_; }
+  auto operator==(const BaseIterator& other) const noexcept -> bool { return reader_ == other.reader_; }
 
  private:
   Reader* reader_{};
   value_type current_{};
 };
 
-template <typename Derived, typename T, size_t kBufferSize, bool kUseHeap>
+template <class Derived, class T, size_t kBufferSize, bool kUseHeap>
 class BaseReader {
  public:
   using value_type = T;
   using iterator = BaseIterator<Derived>;
 
-  explicit BaseReader(int fd) : fd_{fd} {
+  explicit BaseReader(int fd, bool owned) : fd_{fd}, owned_{owned} {
     if constexpr (kUseHeap) {
       buffer_ = std::make_unique<char[]>(kBufferSize);
     }
+  }
+
+  BaseReader(BaseReader&& other) noexcept
+      : fd_(std::exchange(other.fd_, -1)),
+        owned_(std::exchange(other.owned_, false)),
+        buf_pos_(other.buf_pos_),
+        buf_end_(other.buf_end_),
+        buffer_(std::move(other.buffer_)) {}
+
+  BaseReader& operator=(BaseReader&& other) noexcept {
+    if (this != &other) {
+      if (fd_ >= 0 && owned_) raw_close(fd_);
+      fd_ = std::exchange(other.fd_, -1);
+      owned_ = std::exchange(other.owned_, false);
+      buf_pos_ = other.buf_pos_;
+      buf_end_ = other.buf_end_;
+      buffer_ = std::move(other.buffer_);
+    }
+    return *this;
   }
 
   BaseReader(const BaseReader&) = delete;
   BaseReader& operator=(const BaseReader&) = delete;
 
   ~BaseReader() {
-    if (fd_ >= 0) raw_close(fd_);
+    if (fd_ >= 0 && owned_) raw_close(fd_);
   }
 
   operator bool() const noexcept { return IsValid(); }
+
+  auto operator++(int) { return operator++(); }
 
   auto IsValid() const noexcept { return fd_ >= 0; }
   auto GetFd() const noexcept { return fd_; }
@@ -136,21 +153,31 @@ class BaseReader {
 
  private:
   int fd_;
+  bool owned_;
   size_t buf_pos_{};
   size_t buf_end_{};
   std::conditional_t<kUseHeap, std::unique_ptr<char[]>, std::array<char, kBufferSize>> buffer_;
 };
 
-template <size_t kBufferSize = 16 * 1024, bool kUseHeap = false>
-class FileReader : public BaseReader<FileReader<kBufferSize, kUseHeap>, std::string_view, kBufferSize, kUseHeap> {
+constexpr size_t kDefaultBufferSize = 16 * 1024;
+
+template <size_t kBufferSize>
+constexpr bool kUseHeap = kBufferSize > kDefaultBufferSize;
+}  // namespace internal
+
+template <auto kBufferSize = internal::kDefaultBufferSize, auto kUseHeap = internal::kUseHeap<kBufferSize>>
+class FileReader
+    : public internal::BaseReader<FileReader<kBufferSize, kUseHeap>, std::string_view, kBufferSize, kUseHeap> {
  public:
-  explicit FileReader(const char* pathname) : FileReader{raw_open(pathname, O_RDONLY | O_CLOEXEC, 0)} {}
+  explicit FileReader(int fd) : FileReader{fd, false} {}
+  explicit FileReader(const char* pathname) : FileReader{raw_open(pathname, O_RDONLY | O_CLOEXEC, 0), true} {}
 
-  explicit FileReader(int fd) : BaseReader<FileReader, std::string_view, kBufferSize, kUseHeap>{fd} {}
+  FileReader(int dirfd, const char* pathname)
+      : FileReader{raw_openat(dirfd, pathname, O_RDONLY | O_CLOEXEC, 0), true} {}
 
-  auto operator*() { return NextLine(); }
+  auto operator++() { return NextLine(); }
 
-  auto NextLine() {
+  auto NextLine() -> std::optional<std::string_view> {
     return this->NextImpl(+[](char* buf, size_t available) -> std::optional<std::pair<std::string_view, size_t>> {
       if (available == 0) return {};
 
@@ -164,10 +191,10 @@ class FileReader : public BaseReader<FileReader<kBufferSize, kUseHeap>, std::str
   }
 
  private:
-  auto OnBufferFull(char* buf, size_t sz) -> std::optional<std::string_view> {
-    buf[sz] = '\0';
-    return std::string_view{buf, sz};
-  }
+  FileReader(int fd, bool owned)
+      : internal::BaseReader<FileReader, std::string_view, kBufferSize, kUseHeap>{fd, owned} {}
+
+  auto OnBufferFull(char* buf, size_t sz) -> std::optional<std::string_view> { return std::string_view{buf, sz}; }
 
   auto OnEOF(char* buf, size_t sz) -> std::optional<std::string_view> {
     if (sz == 0) return {};
@@ -177,7 +204,7 @@ class FileReader : public BaseReader<FileReader<kBufferSize, kUseHeap>, std::str
 
   auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_read(fd, buf, sz); }
 
-  friend class BaseReader<FileReader, std::string_view, kBufferSize, kUseHeap>;
+  friend class internal::BaseReader<FileReader, std::string_view, kBufferSize, kUseHeap>;
 };
 
 enum class DirEntryType : uint8_t {
@@ -211,16 +238,18 @@ struct DirEntry {
   [[nodiscard]] auto is_socket() const { return type() == DirEntryType::kSocket; }
 };
 
-template <size_t kBufferSize = 16 * 1024, bool kUseHeap = false>
-class DirReader : public BaseReader<DirReader<kBufferSize, kUseHeap>, DirEntry, kBufferSize, kUseHeap> {
+template <auto kBufferSize = internal::kDefaultBufferSize, auto kUseHeap = internal::kUseHeap<kBufferSize>>
+class DirReader : public internal::BaseReader<DirReader<kBufferSize, kUseHeap>, DirEntry, kBufferSize, kUseHeap> {
  public:
-  explicit DirReader(const char* pathname) : DirReader{raw_open(pathname, O_DIRECTORY | O_CLOEXEC, 0)} {}
+  explicit DirReader(int fd) : DirReader{fd, false} {}
+  explicit DirReader(const char* pathname) : DirReader{raw_open(pathname, O_DIRECTORY | O_CLOEXEC, 0), true} {}
 
-  explicit DirReader(int fd) : BaseReader<DirReader, DirEntry, kBufferSize, kUseHeap>{fd} {}
+  DirReader(int dirfd, const char* pathname)
+      : DirReader{raw_openat(dirfd, pathname, O_DIRECTORY | O_CLOEXEC, 0), true} {}
 
-  auto operator*() { return NextEntry(); }
+  auto operator++() { return NextEntry(); }
 
-  auto NextEntry() {
+  auto NextEntry() -> std::optional<DirEntry> {
     return this->NextImpl(+[](char* buf, size_t available) -> std::optional<std::pair<DirEntry, size_t>> {
       if (available < offsetof(kernel_dirent64, d_name)) return {};
 
@@ -232,13 +261,15 @@ class DirReader : public BaseReader<DirReader<kBufferSize, kUseHeap>, DirEntry, 
   }
 
  private:
+  DirReader(int fd, bool owned) : internal::BaseReader<DirReader, DirEntry, kBufferSize, kUseHeap>{fd, owned} {}
+
   auto OnBufferFull(char*, size_t) { return std::optional<DirEntry>{}; }
 
   auto OnEOF(char*, size_t) { return std::optional<DirEntry>{}; }
 
   auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_getdents64(fd, static_cast<kernel_dirent64*>(buf), sz); }
 
-  friend class BaseReader<DirReader, DirEntry, kBufferSize, kUseHeap>;
+  friend class internal::BaseReader<DirReader, DirEntry, kBufferSize, kUseHeap>;
 };
 
 }  // namespace io
