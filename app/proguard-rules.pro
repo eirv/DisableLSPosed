@@ -21,6 +21,7 @@
 #-renamesourcefileattribute SourceFile
 
 -dontobfuscate
+-dontoptimize
 -keepattributes SourceFile,LineNumberTable
 
 -keep class io.github.eirv.disablelsposed.Native { native *(...); }
