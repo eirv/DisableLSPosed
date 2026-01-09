@@ -17,8 +17,8 @@ android {
     applicationId = "io.github.eirv.disablelsposed"
     minSdk = 33
     targetSdk = 36
-    versionCode = 10003
-    versionName = "1.3"
+    versionCode = 10004
+    versionName = "1.4"
 
     externalNativeBuild {
       cmake {
