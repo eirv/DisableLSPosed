@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -506,7 +507,6 @@ auto FindGlobalRefTable(JavaVM* vm) -> std::optional<std::span<uint32_t>> {
     if (mem[i + 1] != 2 /* IndirectRefKind::kGlobal */) continue;
     if (mem[i + 2] > 1'000'000) continue;
     if (mem[i + 3] > 1'000'000) continue;
-    if (mem[i + 3] < mem[i + 2]) continue;
 
     if (std::find_if(indirect_ref_tables.begin(), indirect_ref_tables.end(), [addr = mem[i]](const auto& p) {
           return p.first <= addr && addr < p.second;
@@ -528,13 +528,14 @@ auto xdl_sym(void* handle, const char* symbol) {
   return addr ?: xdl_dsym(handle, symbol, nullptr);
 }
 
-void VisitJNIGlobalReferences(JavaVM* vm, JNIEnv* env, RootVisitor* visitor) {
+void VisitJNIGlobalReferences(JavaVM* vm, JNIEnv* env, const std::function<void(Object*, const RootInfo&)>& visitor) {
   if (auto art = xdl_open("libart.so", XDL_DEFAULT)) {
     auto visit_roots = reinterpret_cast<void (*)(JavaVM*, RootVisitor*)>(
         xdl_sym(art, "_ZN3art9JavaVMExt10VisitRootsEPNS_11RootVisitorE"));
     xdl_close(art);
     if (visit_roots) {
-      visit_roots(vm, visitor);
+      LambdaRootVisitor root_visitor{visitor};
+      visit_roots(vm, &root_visitor);
       return;
     }
   }
@@ -544,7 +545,7 @@ void VisitJNIGlobalReferences(JavaVM* vm, JNIEnv* env, RootVisitor* visitor) {
       auto ref = global_ref_table->data()[i * 2 + 1];
       if (ref == 0) continue;
       auto object = reinterpret_cast<Object*>(static_cast<uintptr_t>(ref));
-      visitor->VisitRoot(&object, RootInfo{art::kRootJNIGlobal});
+      visitor(object, RootInfo{art::kRootJNIGlobal});
     }
   }
 }
@@ -756,7 +757,7 @@ auto JNI_OnLoad(JavaVM* vm, void*) -> jint {
   auto enable_mid = JNI_GetStaticMethodID(env, compiler_cls, "enable", "()V");
   auto stub_method = JNI_ToReflectedMethod(env, compiler_cls, enable_mid, JNI_TRUE);
 
-  auto visitor = LambdaRootVisitor{[&](auto object, auto) {
+  VisitJNIGlobalReferences(vm, env, [&](auto object, auto) {
     auto ref = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(object));
     if (ref == 0) return;
     auto ref_class_addr = *reinterpret_cast<uint32_t*>(ref);
@@ -809,8 +810,7 @@ auto JNI_OnLoad(JavaVM* vm, void*) -> jint {
 #endif
       break;
     }
-  }};
-  VisitJNIGlobalReferences(vm, env, &visitor);
+  });
 
   RemapExecutableSegmentsForArt(vm);
 
