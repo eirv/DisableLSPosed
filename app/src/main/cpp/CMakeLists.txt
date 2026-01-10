@@ -31,6 +31,7 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
         main.cc
         descriptor_builder.cc
+        maps_parser.cc
         third-party/xDL/xdl/src/main/cpp/xdl.c
         third-party/xDL/xdl/src/main/cpp/xdl_iterate.c
         third-party/xDL/xdl/src/main/cpp/xdl_linker.c

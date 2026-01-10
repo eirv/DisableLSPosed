@@ -1,5 +1,7 @@
 #pragma once
 
+#include <jni.h>
+
 #define ExceptionOccurred() \
   ExceptionCheck() ? env->functions->ExceptionOccurred(env) : jthrowable {}
 #include "jni_helper.hpp"

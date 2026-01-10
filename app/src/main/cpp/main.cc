@@ -8,7 +8,6 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
-#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -18,10 +17,10 @@
 #include <vector>
 
 #include "descriptor_builder.h"
-#include "file_reader.h"
 #include "gc_root.h"
 #include "jni_helper.h"
 #include "linux_syscall_support.h"
+#include "maps_parser.h"
 #include "xdl.h"
 
 using namespace std::string_literals;
@@ -32,6 +31,9 @@ using art::LambdaRootVisitor;
 using art::RootInfo;
 using art::RootVisitor;
 using art::mirror::Object;
+using io::proc::MapsParser;
+
+using LambdaRootVisitorType = typename LambdaRootVisitor::Type;
 
 namespace {
 #ifdef USE_SPANNABLE_STRING_BUILDER
@@ -480,18 +482,9 @@ auto CollectIndirectRefTables() {
 
   std::unordered_map<uintptr_t, uintptr_t> tables;
 
-  for (auto& line : io::FileReader{"/proc/self/maps"}) {
-#ifdef __LP64__
-    static constexpr auto kNameOffset = 25 + sizeof(void*) * 6;
-    if (line.size() <= kNameOffset) continue;
-    if (line.substr(kNameOffset) != kTargetName) continue;
-#else
-    if (!line.contains(kTargetName)) continue;
-#endif
-    char* tmp = nullptr;
-    auto start = strtoul(line.data(), &tmp, 16);
-    auto end = strtoul(tmp + 1 /* '-' */, nullptr, 16);
-    tables.emplace(start, end);
+  for (auto& vma : MapsParser{io::proc::kVmaRead | io::proc::kVmaWrite}) {
+    if (vma.name != kTargetName) continue;
+    tables.emplace(vma.vma_start, vma.vma_end);
   }
   return tables;
 }
@@ -503,7 +496,7 @@ auto FindGlobalRefTable(JavaVM* vm) -> std::optional<std::span<uint32_t>> {
   }
 
   auto mem = reinterpret_cast<uintptr_t*>(vm + 1);
-  for (size_t i = 0; i < 512; ++i) {
+  for (size_t i = 0; i < 256; ++i) {
     if (mem[i + 1] != 2 /* IndirectRefKind::kGlobal */) continue;
     if (mem[i + 2] > 1'000'000) continue;
     if (mem[i + 3] > 1'000'000) continue;
@@ -524,12 +517,16 @@ auto FindGlobalRefTable(JavaVM* vm) -> std::optional<std::span<uint32_t>> {
 }
 
 auto xdl_sym(void* handle, const char* symbol) {
-  auto addr = ::xdl_sym(handle, symbol, nullptr);
-  return addr ?: xdl_dsym(handle, symbol, nullptr);
+  return ::xdl_sym(handle, symbol, nullptr) ?: xdl_dsym(handle, symbol, nullptr);
 }
 
-void VisitJNIGlobalReferences(JavaVM* vm, JNIEnv* env, const std::function<void(Object*, const RootInfo&)>& visitor) {
-  if (auto art = xdl_open("libart.so", XDL_DEFAULT)) {
+void VisitJNIGlobalReferences(JavaVM* vm, LambdaRootVisitorType visitor) {
+  auto vm_library_path = "libart.so";
+  if (Dl_info info{}; dladdr(reinterpret_cast<void*>(vm->functions->GetEnv), &info) && info.dli_fname) {
+    vm_library_path = info.dli_fname;
+  }
+
+  if (auto art = xdl_open(vm_library_path, XDL_DEFAULT)) {
     auto visit_roots = reinterpret_cast<void (*)(JavaVM*, RootVisitor*)>(
         xdl_sym(art, "_ZN3art9JavaVMExt10VisitRootsEPNS_11RootVisitorE"));
     xdl_close(art);
@@ -556,6 +553,7 @@ void RemapExecutableSegmentsForArt(JavaVM* vm) {
 
   auto fd = raw_open(info.dli_fname, O_RDONLY, 0);
   if (fd < 0) return;
+
   auto size = raw_lseek(fd, 0, SEEK_END);
   auto elf = static_cast<ElfW(Ehdr)*>(raw_mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0));
   if (reinterpret_cast<uintptr_t>(elf) >= -4095UL) {
@@ -757,7 +755,7 @@ auto JNI_OnLoad(JavaVM* vm, void*) -> jint {
   auto enable_mid = JNI_GetStaticMethodID(env, compiler_cls, "enable", "()V");
   auto stub_method = JNI_ToReflectedMethod(env, compiler_cls, enable_mid, JNI_TRUE);
 
-  VisitJNIGlobalReferences(vm, env, [&](auto object, auto) {
+  VisitJNIGlobalReferences(vm, [&](auto object, auto) {
     auto ref = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(object));
     if (ref == 0) return;
     auto ref_class_addr = *reinterpret_cast<uint32_t*>(ref);

@@ -100,13 +100,14 @@ class SingleRootVisitor : public RootVisitor {
 
 class LambdaRootVisitor : public SingleRootVisitor {
  public:
-  LambdaRootVisitor(const std::function<void(mirror::Object* root, const RootInfo& info)>& visitor)
-      : visitor_{visitor} {}
+  using Type = const std::function<void(mirror::Object* root, const RootInfo& info)>&;
+
+  LambdaRootVisitor(Type visitor) : visitor_{visitor} {}
 
  private:
   virtual void VisitRoot(mirror::Object* root, const RootInfo& info) override { visitor_(root, info); }
 
-  const std::function<void(mirror::Object*, const RootInfo&)>& visitor_;
+  Type visitor_;
 };
 
 }  // namespace art

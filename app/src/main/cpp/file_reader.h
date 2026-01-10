@@ -67,18 +67,18 @@ class BaseReader {
   using value_type = T;
   using iterator = BaseIterator<Derived>;
 
-  explicit BaseReader(int fd, bool owned) : fd_{fd}, owned_{owned} {
+  BaseReader(int fd, bool owned) : fd_{fd}, owned_{owned} {
     if constexpr (kUseHeap) {
       buffer_ = std::make_unique<char[]>(kBufferSize);
     }
   }
 
   BaseReader(BaseReader&& other) noexcept
-      : fd_(std::exchange(other.fd_, -1)),
-        owned_(std::exchange(other.owned_, false)),
-        buf_pos_(other.buf_pos_),
-        buf_end_(other.buf_end_),
-        buffer_(std::move(other.buffer_)) {}
+      : fd_{std::exchange(other.fd_, -1)},
+        owned_{std::exchange(other.owned_, false)},
+        buf_pos_{other.buf_pos_},
+        buf_end_{other.buf_end_},
+        buffer_{std::move(other.buffer_)} {}
 
   BaseReader& operator=(BaseReader&& other) noexcept {
     if (this != &other) {
