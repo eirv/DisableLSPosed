@@ -44,6 +44,7 @@ MapsParser::MapsParser(uint32_t query_vma_flags) : maps_reader_{"/proc/self/maps
   auto query = reinterpret_cast<procmap_query*>(query_buffer_.data());
   query->size = sizeof(procmap_query);
   query->query_flags = query_vma_flags | PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
+  query->vma_name_addr = reinterpret_cast<uintptr_t>(name_buffer_.data());
 
   static_assert(sizeof(name_buffer_) == PATH_MAX);
   static_assert(sizeof(query_buffer_) == sizeof(procmap_query));
@@ -56,7 +57,6 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
 
   if (status_ == Status::kTryIoctl) [[unlikely]] {
     auto query = reinterpret_cast<procmap_query*>(query_buffer_.data());
-    query->vma_name_addr = reinterpret_cast<uintptr_t>(name_buffer_.data());
     query->vma_name_size = name_buffer_.size();
     name_buffer_[0] = '\0';
 
@@ -67,6 +67,8 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
 
     if (r == 0) [[likely]] {
       query->query_addr = query->vma_end;
+      auto name_size = static_cast<size_t>(query->vma_name_size);
+      if (name_size) --name_size;
       return VmaEntry{
           .vma_start = static_cast<uintptr_t>(query->vma_start),
           .vma_end = static_cast<uintptr_t>(query->vma_end),
@@ -75,7 +77,7 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
           .dev_major = query->dev_major,
           .dev_minor = query->dev_minor,
           .inode = query->inode,
-          .name = std::string_view{name_buffer_.data(), static_cast<size_t>(query->vma_name_size)},
+          .name = std::string_view{name_buffer_.data(), name_size},
       };
     } else if (r == -ENOENT) [[likely]] {
       status_ = Status::kCompleted;
