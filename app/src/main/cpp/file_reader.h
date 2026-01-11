@@ -18,7 +18,7 @@ namespace io {
 
 namespace internal {
 template <class Reader>
-class BaseIterator {
+class Iterator {
  public:
   using iterator_category = std::input_iterator_tag;
   using value_type = typename Reader::value_type;
@@ -28,8 +28,8 @@ class BaseIterator {
   using pointer = value_type*;
   using const_pointer = const value_type*;
 
-  BaseIterator() = default;
-  explicit BaseIterator(Reader* reader) : reader_{reader} { operator++(); }
+  Iterator() = default;
+  explicit Iterator(Reader* reader) : reader_{reader} { operator++(); }
 
   auto operator*() const noexcept -> const_reference { return current_; }
   auto operator*() noexcept -> reference { return current_; }
@@ -38,23 +38,22 @@ class BaseIterator {
 
   auto operator++() noexcept -> auto& {
     if (!reader_) return *this;
-    auto ret = reader_->operator++();
-    if (!ret) {
+    if (auto ret = reader_->operator++()) [[likely]] {
+      current_ = std::move(*ret);
+    } else {
       reader_ = nullptr;
       current_ = {};
-    } else {
-      current_ = std::move(*ret);
     }
     return *this;
   }
 
   auto operator++(int) noexcept {
     auto tmp = *this;
-    ++(*this);
+    operator++();
     return tmp;
   }
 
-  auto operator==(const BaseIterator& other) const noexcept -> bool { return reader_ == other.reader_; }
+  auto operator==(const Iterator& other) const noexcept -> bool { return reader_ == other.reader_; }
 
  private:
   Reader* reader_{};
@@ -65,7 +64,7 @@ template <class Derived, class T, size_t kBufferSize, bool kUseHeap>
 class BaseReader {
  public:
   using value_type = T;
-  using iterator = BaseIterator<Derived>;
+  using iterator = Iterator<Derived>;
 
   BaseReader(int fd, bool owned) : fd_{fd}, owned_{owned} {
     if constexpr (kUseHeap) {
@@ -80,7 +79,7 @@ class BaseReader {
         buf_end_{other.buf_end_},
         buffer_{std::move(other.buffer_)} {}
 
-  BaseReader& operator=(BaseReader&& other) noexcept {
+  auto operator=(BaseReader&& other) noexcept -> auto& {
     if (this != &other) {
       if (fd_ >= 0 && owned_) raw_close(fd_);
       fd_ = std::exchange(other.fd_, -1);
@@ -96,12 +95,14 @@ class BaseReader {
   BaseReader& operator=(const BaseReader&) = delete;
 
   ~BaseReader() {
-    if (fd_ >= 0 && owned_) raw_close(fd_);
+    if (fd_ >= 0 && owned_) [[likely]] {
+      raw_close(fd_);
+    }
   }
 
   operator bool() const noexcept { return IsValid(); }
 
-  auto operator++(int) { return operator++(); }
+  auto operator++(int) { return static_cast<Derived*>(this)->operator++(); }
 
   auto IsValid() const noexcept { return fd_ >= 0; }
   auto GetFd() const noexcept { return fd_; }
@@ -112,19 +113,21 @@ class BaseReader {
  protected:
   template <typename Parser>
   auto NextImpl(Parser&& parse_func) -> std::optional<T> {
-    if (fd_ < 0) return {};
+    if (fd_ < 0) [[unlikely]] {
+      return {};
+    }
 
     for (;;) {
       auto available = buf_end_ - buf_pos_;
 
-      if (auto res = parse_func(&buffer_[buf_pos_], available)) {
+      if (auto res = parse_func(&buffer_[buf_pos_], available)) [[likely]] {
         auto [val, consumed] = *res;
         buf_pos_ += consumed;
         if (buf_pos_ == buf_end_) buf_pos_ = buf_end_ = 0;
         return val;
       }
 
-      if (buf_pos_ > 0 && buf_pos_ < buf_end_) {
+      if (buf_pos_ > 0 && buf_pos_ < buf_end_) [[likely]] {
         auto rem = buf_end_ - buf_pos_;
         memmove(&buffer_[0], &buffer_[buf_pos_], rem);
         buf_end_ = rem;
@@ -134,7 +137,7 @@ class BaseReader {
       }
 
       auto space = kBufferSize - buf_end_;
-      if (space == 0) {
+      if (space == 0) [[unlikely]] {
         return static_cast<Derived*>(this)->OnBufferFull(&buffer_[0], buf_end_);
       }
 
@@ -143,7 +146,7 @@ class BaseReader {
         n = static_cast<Derived*>(this)->ReadFromFD(fd_, &buffer_[buf_end_], space);
       } while (n == -EINTR);
 
-      if (n <= 0) {
+      if (n <= 0) [[unlikely]] {
         return static_cast<Derived*>(this)->OnEOF(&buffer_[0], buf_end_);
       }
 
@@ -169,19 +172,21 @@ template <auto kBufferSize = internal::kDefaultBufferSize, auto kUseHeap = inter
 class FileReader
     : public internal::BaseReader<FileReader<kBufferSize, kUseHeap>, std::string_view, kBufferSize, kUseHeap> {
  public:
-  explicit FileReader(int fd) : FileReader{fd, false} {}
-  explicit FileReader(const char* pathname) : FileReader{raw_open(pathname, O_RDONLY | O_CLOEXEC, 0), true} {}
+  explicit FileReader(int fd) : FileReader::BaseReader{fd, false} {}
+  explicit FileReader(const char* pathname) : FileReader::BaseReader{raw_open(pathname, O_RDONLY | O_CLOEXEC), true} {}
 
   FileReader(int dirfd, const char* pathname)
-      : FileReader{raw_openat(dirfd, pathname, O_RDONLY | O_CLOEXEC, 0), true} {}
+      : FileReader::BaseReader{raw_openat(dirfd, pathname, O_RDONLY | O_CLOEXEC), true} {}
 
   auto operator++() { return NextLine(); }
 
   auto NextLine() -> std::optional<std::string_view> {
     return this->NextImpl(+[](char* buf, size_t available) -> std::optional<std::pair<std::string_view, size_t>> {
-      if (available == 0) return {};
+      if (!available) [[unlikely]] {
+        return {};
+      }
 
-      if (auto nl = static_cast<char*>(memchr(buf, '\n', available))) {
+      if (auto nl = static_cast<char*>(memchr(buf, '\n', available))) [[likely]] {
         *nl = '\0';
         auto len = static_cast<size_t>(nl - buf);
         return std::pair{std::string_view{buf, len}, len + 1};
@@ -191,9 +196,6 @@ class FileReader
   }
 
  private:
-  FileReader(int fd, bool owned)
-      : internal::BaseReader<FileReader, std::string_view, kBufferSize, kUseHeap>{fd, owned} {}
-
   auto OnBufferFull(char* buf, size_t sz) -> std::optional<std::string_view> { return std::string_view{buf, sz}; }
 
   auto OnEOF(char* buf, size_t sz) -> std::optional<std::string_view> {
@@ -204,7 +206,7 @@ class FileReader
 
   auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_read(fd, buf, sz); }
 
-  friend class internal::BaseReader<FileReader, std::string_view, kBufferSize, kUseHeap>;
+  friend class FileReader::BaseReader;
 };
 
 enum class DirEntryType : uint8_t {
@@ -241,35 +243,37 @@ struct DirEntry {
 template <auto kBufferSize = internal::kDefaultBufferSize, auto kUseHeap = internal::kUseHeap<kBufferSize>>
 class DirReader : public internal::BaseReader<DirReader<kBufferSize, kUseHeap>, DirEntry, kBufferSize, kUseHeap> {
  public:
-  explicit DirReader(int fd) : DirReader{fd, false} {}
-  explicit DirReader(const char* pathname) : DirReader{raw_open(pathname, O_DIRECTORY | O_CLOEXEC, 0), true} {}
+  explicit DirReader(int fd) : DirReader::BaseReader{fd, false} {}
+  explicit DirReader(const char* pathname) : DirReader::BaseReader{raw_open(pathname, O_DIRECTORY | O_CLOEXEC), true} {}
 
   DirReader(int dirfd, const char* pathname)
-      : DirReader{raw_openat(dirfd, pathname, O_DIRECTORY | O_CLOEXEC, 0), true} {}
+      : DirReader::BaseReader{raw_openat(dirfd, pathname, O_DIRECTORY | O_CLOEXEC), true} {}
 
   auto operator++() { return NextEntry(); }
 
   auto NextEntry() -> std::optional<DirEntry> {
     return this->NextImpl(+[](char* buf, size_t available) -> std::optional<std::pair<DirEntry, size_t>> {
-      if (available < offsetof(kernel_dirent64, d_name)) return {};
+      if (available < offsetof(kernel_dirent64, d_name)) [[unlikely]] {
+        return {};
+      }
 
       auto dir = reinterpret_cast<kernel_dirent64*>(buf);
-      if (available < dir->d_reclen) return {};
+      if (available < dir->d_reclen) [[unlikely]] {
+        return {};
+      }
 
       return std::pair{DirEntry{dir}, dir->d_reclen};
     });
   }
 
  private:
-  DirReader(int fd, bool owned) : internal::BaseReader<DirReader, DirEntry, kBufferSize, kUseHeap>{fd, owned} {}
+  auto OnBufferFull(char*, size_t) -> std::optional<DirEntry> { return {}; }
 
-  auto OnBufferFull(char*, size_t) { return std::optional<DirEntry>{}; }
-
-  auto OnEOF(char*, size_t) { return std::optional<DirEntry>{}; }
+  auto OnEOF(char*, size_t) -> std::optional<DirEntry> { return {}; }
 
   auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_getdents64(fd, static_cast<kernel_dirent64*>(buf), sz); }
 
-  friend class internal::BaseReader<DirReader, DirEntry, kBufferSize, kUseHeap>;
+  friend class DirReader::BaseReader;
 };
 
 }  // namespace io

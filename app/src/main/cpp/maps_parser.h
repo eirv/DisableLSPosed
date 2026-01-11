@@ -28,7 +28,7 @@ struct VmaEntry {
 class MapsParser {
  public:
   using value_type = VmaEntry;
-  using iterator = internal::BaseIterator<MapsParser>;
+  using iterator = internal::Iterator<MapsParser>;
 
   explicit MapsParser(uint32_t query_vma_flags = 0);
 
@@ -38,7 +38,7 @@ class MapsParser {
         name_buffer_{std::move(other.name_buffer_)},
         query_buffer_{std::move(other.query_buffer_)} {}
 
-  MapsParser& operator=(MapsParser&& other) noexcept {
+  auto operator=(MapsParser&& other) noexcept -> auto& {
     if (this != &other) {
       maps_reader_ = std::move(other.maps_reader_);
       status_ = other.status_;
