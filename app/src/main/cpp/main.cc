@@ -588,7 +588,7 @@ void RemapExecutableSegmentsForArt(JavaVM* vm) {
   raw_close(fd);
 }
 
-auto ToStringArray(JNIEnv* env, std::vector<std::string>& vec) {
+auto ToStringArray(JNIEnv* env, const std::vector<std::string>& vec) {
   auto string_cls = JNI_FindClass(env, "java/lang/String");
   auto arr = JNI_NewObjectArray(env, static_cast<jsize>(vec.size()), string_cls, nullptr);
   jsize i = 0;
@@ -596,7 +596,6 @@ auto ToStringArray(JNIEnv* env, std::vector<std::string>& vec) {
     auto jstr = JNI_NewStringUTF(env, s);
     arr[i++] = jstr.get();
   }
-  vec.clear();
   return arr.release();
 }
 }  // namespace
@@ -606,8 +605,7 @@ extern "C" {
 auto Java_io_github_eirv_disablelsposed_Native_nGetUnhookedMethods([[maybe_unused]] JNIEnv* env, jclass)
     -> jobjectArray {
 #ifdef USE_SPANNABLE_STRING_BUILDER
-  auto vec = std::vector{"Released"s};
-  return ToStringArray(env, vec);
+  return nullptr;
 #else
   return ToStringArray(env, unhooked_methods_);
 #endif
@@ -616,11 +614,7 @@ auto Java_io_github_eirv_disablelsposed_Native_nGetUnhookedMethods([[maybe_unuse
 [[gnu::visibility("default")]]
 auto Java_io_github_eirv_disablelsposed_Native_nGetUnhookedMethodList([[maybe_unused]] JNIEnv* env, jclass) -> jobject {
 #ifdef USE_SPANNABLE_STRING_BUILDER
-  if (!unhooked_method_list_) return nullptr;
-  auto list = env->NewLocalRef(unhooked_method_list_);
-  env->DeleteGlobalRef(unhooked_method_list_);
-  unhooked_method_list_ = nullptr;
-  return list;
+  return unhooked_method_list_;
 #else
   return nullptr;
 #endif
