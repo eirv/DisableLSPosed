@@ -14,6 +14,9 @@ static constexpr uint32_t kVmaExec = 0x04;
 static constexpr uint32_t kVmaShared = 0x08;
 static constexpr uint32_t kVmaAllFlags = kVmaRead | kVmaWrite | kVmaExec | kVmaShared;
 
+static constexpr uint32_t kVmaQueryFileBackedVma = 0x20;
+static constexpr uint32_t kVmaAllQueryFlags = kVmaAllFlags | kVmaQueryFileBackedVma;
+
 struct VmaEntry {
   uintptr_t vma_start;
   uintptr_t vma_end;
@@ -30,7 +33,7 @@ class MapsParser {
   using value_type = VmaEntry;
   using iterator = internal::Iterator<MapsParser>;
 
-  explicit MapsParser(uint32_t query_vma_flags = 0);
+  explicit MapsParser(uint32_t query_flags = 0);
 
   MapsParser(MapsParser&& other) noexcept
       : maps_reader_{std::move(other.maps_reader_)},

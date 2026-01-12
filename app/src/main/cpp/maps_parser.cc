@@ -40,10 +40,10 @@ auto FastParseHex(const char** p) {
 }
 }  // namespace
 
-MapsParser::MapsParser(uint32_t query_vma_flags) : maps_reader_{"/proc/self/maps"} {
+MapsParser::MapsParser(uint32_t query_flags) : maps_reader_{"/proc/self/maps"} {
   auto query = reinterpret_cast<procmap_query*>(query_buffer_.data());
   query->size = sizeof(procmap_query);
-  query->query_flags = query_vma_flags | PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
+  query->query_flags = query_flags | PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
   query->vma_name_addr = reinterpret_cast<uintptr_t>(name_buffer_.data());
 
   static_assert(sizeof(name_buffer_) == PATH_MAX);
@@ -88,10 +88,18 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
   }
 
   for (std::optional<std::string_view> line; (line = maps_reader_.NextLine()).has_value();) {
+    if (line->empty()) [[unlikely]] {
+      break;
+    }
+
     auto tmp = line->data();
 
     auto vma_start = FastParseHex<uintptr_t>(&tmp);
     auto vma_end = FastParseHex<uintptr_t>(&tmp);
+
+    if (!vma_start || !vma_end) [[unlikely]] {
+      break;
+    }
 
     auto vma_flags = uint32_t{};
     if (tmp[0] == 'r') vma_flags |= kVmaRead;
@@ -101,8 +109,8 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
     tmp += 5;
 
     auto query_flags =
-        static_cast<uint32_t>(reinterpret_cast<procmap_query*>(query_buffer_.data())->query_flags) & kVmaAllFlags;
-    if (query_flags != 0 && query_flags != vma_flags) continue;
+        static_cast<uint32_t>(reinterpret_cast<procmap_query*>(query_buffer_.data())->query_flags) & kVmaAllQueryFlags;
+    if (query_flags != 0 && (query_flags & kVmaAllFlags) != vma_flags) continue;
 
     auto vma_offset = FastParseHex<uint64_t>(&tmp);
     auto dev_major = FastParseHex<uint32_t>(&tmp);
@@ -112,9 +120,8 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
 #ifdef __LP64__
     auto name = line->size() > kNameOffset<64> ? line->substr(kNameOffset<64>) : std::string_view{};
 #else
-    static auto name_offset = size_t{};
     auto name = std::string_view{};
-    if (name_offset) [[likely]] {
+    if (static auto name_offset = size_t{}; name_offset) [[likely]] {
       if (line->size() > name_offset) {
         name = line->substr(name_offset);
       }
@@ -124,6 +131,10 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
       name = line->substr(name_offset);
     }
 #endif
+
+    if (query_flags & kVmaQueryFileBackedVma && !name.empty() && name[0] == '/') [[unlikely]] {
+      continue;
+    }
 
     return VmaEntry{
         .vma_start = vma_start,
