@@ -26,12 +26,12 @@
 using namespace std::string_literals;
 using namespace std::string_view_literals;
 using namespace lsplant;
+using namespace io::proc;
 
 using art::LambdaRootVisitor;
 using art::RootInfo;
 using art::RootVisitor;
 using art::mirror::Object;
-using io::proc::MapsParser;
 
 using LambdaRootVisitorType = typename LambdaRootVisitor::Type;
 
@@ -474,7 +474,7 @@ auto FindFrameworkAPIClassAndClassLoaderByStackTrace(JNIEnv* env,
     framework_api_class_loader.reset(class_loader.release());
   }
 
-  return std::nullopt;
+  return {};
 }
 
 auto CollectIndirectRefTables() {
@@ -482,7 +482,7 @@ auto CollectIndirectRefTables() {
 
   std::unordered_map<uintptr_t, uintptr_t> tables;
 
-  for (auto& vma : MapsParser{io::proc::kVmaRead | io::proc::kVmaWrite}) {
+  for (auto& vma : MapsParser{kVmaRead | kVmaWrite}) {
     if (vma.name != kTargetName) continue;
     tables.emplace(vma.vma_start, vma.vma_end);
   }
