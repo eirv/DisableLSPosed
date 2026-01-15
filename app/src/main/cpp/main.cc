@@ -427,51 +427,82 @@ auto FindFrameworkAPIClassAndClassLoaderByStackTrace(JNIEnv* env,
                                                      jfieldID dex_file_fid,
                                                      jmethodID get_class_name_list_mid)
     -> std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>> {
-  auto load_dex_mid = JNI_GetStaticMethodID(
-      env, dex_file_cls, "loadDex", "(Ljava/lang/String;Ljava/lang/String;I)Ldalvik/system/DexFile;");
-  env->CallStaticObjectMethod(dex_file_cls.get(), load_dex_mid, nullptr, nullptr, jint{0});
-  if (!env->ExceptionCheck()) {
-    return {};
-  }
-  auto exception = ScopedLocalRef{env, env->ExceptionOccurred()};
-  env->ExceptionClear();
-
-  auto throwable_cls = JNI_FindClass(env, "java/lang/Throwable");
-  auto backtrace_fid = JNI_GetFieldID(env, throwable_cls, "backtrace", "Ljava/lang/Object;");
-  auto backtrace = JNI_Cast<jobjectArray>(JNI_GetObjectField(env, exception, backtrace_fid));
-  auto boot_class_loader = JNI_CallNonvirtualObjectMethod(env, throwable_cls, class_cls, get_class_loader_mid);
-  ScopedLocalRef<jclass> framework_api_class{env};
-  ScopedLocalRef<jobject> framework_api_class_loader{env};
-
-  for (jsize i = 2, len = static_cast<jsize>(backtrace.size()); i < len; ++i) {
-    auto element = JNI_Cast<jclass>(backtrace[i]);
-    if (!element) continue;
-    auto class_loader = JNI_CallNonvirtualObjectMethod(env, element, class_cls, get_class_loader_mid);
-    if (!class_loader) continue;
-
-    if (JNI_IsSameObject(env, class_loader, boot_class_loader)) {
-      continue;
+  auto finder = [&] -> std::optional<std::pair<ScopedLocalRef<jclass>, ScopedLocalRef<jobject>>> {
+    if (!env->ExceptionCheck()) {
+      return {};
     }
 
-    if (!framework_api_class_loader) {
+    auto exception = ScopedLocalRef{env, env->ExceptionOccurred()};
+    env->ExceptionClear();
+
+    auto throwable_cls = JNI_FindClass(env, "java/lang/Throwable");
+    auto backtrace_fid = JNI_GetFieldID(env, throwable_cls, "backtrace", "Ljava/lang/Object;");
+    auto backtrace = JNI_Cast<jobjectArray>(JNI_GetObjectField(env, exception, backtrace_fid));
+    auto boot_class_loader = JNI_CallNonvirtualObjectMethod(env, throwable_cls, class_cls, get_class_loader_mid);
+    ScopedLocalRef<jclass> framework_api_class{env};
+    ScopedLocalRef<jobject> framework_api_class_loader{env};
+
+    for (jsize i = 2, len = static_cast<jsize>(backtrace.size()); i < len; ++i) {
+      auto element = JNI_Cast<jclass>(backtrace[i]);
+      if (!element) continue;
+      auto class_loader = JNI_CallNonvirtualObjectMethod(env, element, class_cls, get_class_loader_mid);
+      if (!class_loader) continue;
+
+      if (JNI_IsSameObject(env, class_loader, boot_class_loader)) {
+        continue;
+      }
+
+      if (!framework_api_class_loader) {
+        framework_api_class.reset(element.release());
+        framework_api_class_loader.reset(class_loader.release());
+        continue;
+      }
+
+      if (JNI_IsSameObject(env, class_loader, framework_api_class_loader)) {
+        framework_api_class.reset(element.release());
+        continue;
+      }
+
+      auto class_names =
+          GetClassNameList(env, element, dex_cache_fid, dex_file_fid, dex_file_cls, get_class_name_list_mid);
+      if (class_names.size() == 1) {
+        return std::pair{std::move(framework_api_class), std::move(framework_api_class_loader)};
+      }
+
       framework_api_class.reset(element.release());
       framework_api_class_loader.reset(class_loader.release());
-      continue;
     }
 
-    if (JNI_IsSameObject(env, class_loader, framework_api_class_loader)) {
-      framework_api_class.reset(element.release());
-      continue;
-    }
+    return {};
+  };
 
-    auto class_names =
-        GetClassNameList(env, element, dex_cache_fid, dex_file_fid, dex_file_cls, get_class_name_list_mid);
-    if (class_names.size() == 1) {
-      return std::pair{std::move(framework_api_class), std::move(framework_api_class_loader)};
-    }
+  std::array<jvalue, 7> null_args{};
 
-    framework_api_class.reset(element.release());
-    framework_api_class_loader.reset(class_loader.release());
+  auto load_dex_mid = JNI_GetStaticMethodID(
+      env, dex_file_cls, "loadDex", "(Ljava/lang/String;Ljava/lang/String;I)Ldalvik/system/DexFile;");
+  if (load_dex_mid) {
+    env->CallStaticObjectMethodA(dex_file_cls.get(), load_dex_mid, null_args.data());
+    if (auto result = finder()) return result;
+  }
+
+  auto loaded_apk_cls = JNI_FindClass(env, "android/app/LoadedApk");
+  auto loaded_apk_init_mid =
+      JNI_GetMethodID(env,
+                      loaded_apk_cls,
+                      "<init>",
+                      "(Landroid/app/ActivityThread;Landroid/content/pm/ApplicationInfo;Landroid/content/"
+                      "res/CompatibilityInfo;Ljava/lang/ClassLoader;ZZZ)V");
+  if (loaded_apk_init_mid) {
+    env->NewObjectA(loaded_apk_cls.get(), load_dex_mid, null_args.data());
+    if (auto result = finder()) return result;
+  }
+
+  auto create_or_update_class_loader_locked_mid =
+      JNI_GetMethodID(env, loaded_apk_cls, "createOrUpdateClassLoaderLocked", "(Ljava/util/List;)V");
+  if (create_or_update_class_loader_locked_mid) {
+    auto instance = JNI_AllocObject(env, loaded_apk_cls);
+    env->CallVoidMethodA(instance.get(), create_or_update_class_loader_locked_mid, null_args.data());
+    return finder();
   }
 
   return {};
