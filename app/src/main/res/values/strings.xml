@@ -7,7 +7,7 @@ Attempt to disable %1$s: %2$s
 Attempt to restore inline hook for libart.so: %3$s
 
 Removed &lt;font color='#FFFFFF'&gt;%4$d&lt;/font&gt; Xposed callbacks:
-&lt;font color='#FFFFFF'&gt;%5$s&lt;/font&gt;
+&lt;font color='#FFFFFF' face='monospace'&gt;%5$s&lt;/font&gt;
 Restored &lt;font color='#FFFFFF'&gt;%6$d&lt;/font&gt; methods hooked by LSPlant:
 "</string>
     <string name="success">"&lt;font color='green'&gt;Success&lt;/font&gt;"</string>

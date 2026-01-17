@@ -6,7 +6,7 @@
 尝试恢复对 libart.so 的 inline hook: %3$s
 
 移除了 &lt;font color='#FFFFFF'&gt;%4$d&lt;/font&gt; 个 Xposed 回调:
-&lt;font color='#FFFFFF'&gt;%5$s&lt;/font&gt;
+&lt;font color='#FFFFFF' face='monospace'&gt;%5$s&lt;/font&gt;
 恢复了 &lt;font color='#FFFFFF'&gt;%6$d&lt;/font&gt; 个被 LSPlant hook 的方法:
 "</string>
     <string name="success">"&lt;font color='green'&gt;成功&lt;/font&gt;"</string>

@@ -1,11 +1,14 @@
 package io.github.eirv.disablelsposed
 
 import android.app.Activity
+import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.text.Html
 import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.TypefaceSpan
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.widget.HorizontalScrollView
 import android.widget.ScrollView
@@ -112,10 +115,14 @@ class MainActivity : Activity() {
     return SpannableStringBuilder().apply {
       append(header)
 
+      val pos = length
+
       methodList?.forEach {
         append("\n")
         append(it)
       }
+
+      setSpan(TypefaceSpan(Typeface.MONOSPACE), pos, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     }
   }
 
