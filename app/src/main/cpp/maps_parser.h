@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include "file_reader.h"
 
@@ -26,6 +28,8 @@ struct VmaEntry {
   uint32_t dev_minor;
   uint64_t inode;
   std::string_view name;
+
+  auto get_line() const -> std::string;
 };
 
 class MapsParser {
