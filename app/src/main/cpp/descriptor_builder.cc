@@ -21,7 +21,7 @@ enum class ColorScheme : uint32_t {
   kDescriptorMethodName = 0xFFFF8700u,
   kDescriptorMethodNameSynthetic = 0xFFD0D0D0u,
   kDescriptorSemicolon = 0xFFD0D0D0u,
-  kDescriptorArrow = 0xFFFF0000u
+  kDescriptorArrow = 0xFF949494u
 };
 
 struct Modifier {
