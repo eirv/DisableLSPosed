@@ -47,11 +47,7 @@ class Iterator {
     return *this;
   }
 
-  auto operator++(int) noexcept {
-    auto tmp = *this;
-    operator++();
-    return tmp;
-  }
+  void operator++(int) noexcept { operator++(); }
 
   auto operator==(const Iterator& other) const noexcept -> bool { return reader_ == other.reader_; }
 
@@ -68,8 +64,9 @@ class BaseReader {
 
   BaseReader(int fd, bool owned) : fd_{fd}, owned_{owned} {
     if constexpr (kUseHeap) {
-      buffer_ = std::make_unique<char[]>(kBufferSize);
+      buffer_ = std::make_unique<char[]>(kBufferSize + 1);
     }
+    buffer_[kBufferSize] = '\0';
   }
 
   BaseReader(BaseReader&& other) noexcept
@@ -159,7 +156,7 @@ class BaseReader {
   bool owned_;
   size_t buf_pos_{};
   size_t buf_end_{};
-  std::conditional_t<kUseHeap, std::unique_ptr<char[]>, std::array<char, kBufferSize>> buffer_;
+  std::conditional_t<kUseHeap, std::unique_ptr<char[]>, std::array<char, kBufferSize + 1>> buffer_;
 };
 
 constexpr size_t kDefaultBufferSize = 16 * 1024;
