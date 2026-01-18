@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -30,6 +31,7 @@ struct VmaEntry {
   std::string_view name;
 
   auto get_line() const -> std::string;
+  auto get_line(std::span<char> buffer) const -> std::string_view;
 };
 
 class MapsParser {

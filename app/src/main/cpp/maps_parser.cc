@@ -170,46 +170,60 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
 }
 
 auto VmaEntry::get_line() const -> std::string {
-  std::array<char, kNameOffset<uint64_t> + PATH_MAX + 1> buf;
+  std::array<char, kNameOffset<uint64_t> + PATH_MAX + 1> buffer;
+  auto sv = get_line({buffer.data(), buffer.size()});
+  return {sv.begin(), sv.end()};
+}
 
-  size_t size = snprintf(buf.data(),
-                         kNameOffset<uint64_t>,
-                         "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %llu",
-                         static_cast<unsigned long>(vma_start),
-                         static_cast<unsigned long>(vma_end),
-                         vma_flags & kVmaRead ? 'r' : '-',
-                         vma_flags & kVmaWrite ? 'w' : '-',
-                         vma_flags & kVmaExec ? 'x' : '-',
-                         vma_flags & kVmaShared ? 's' : 'p',
-                         static_cast<unsigned long long>(vma_offset),
-                         dev_major,
-                         dev_minor,
-                         static_cast<unsigned long long>(inode));
+auto VmaEntry::get_line(std::span<char> buffer) const -> std::string_view {
+  if (static_cast<ssize_t>(buffer.size()) <= 0) [[unlikely]] {
+    return {};
+  }
 
-  buf[size] = ' ';
+  ssize_t size = snprintf(buffer.data(),
+                          buffer.size(),
+                          "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %llu",
+                          static_cast<unsigned long>(vma_start),
+                          static_cast<unsigned long>(vma_end),
+                          vma_flags & kVmaRead ? 'r' : '-',
+                          vma_flags & kVmaWrite ? 'w' : '-',
+                          vma_flags & kVmaExec ? 'x' : '-',
+                          vma_flags & kVmaShared ? 's' : 'p',
+                          static_cast<unsigned long long>(vma_offset),
+                          dev_major,
+                          dev_minor,
+                          static_cast<unsigned long long>(inode));
+
+  if (size <= 0) [[unlikely]] {
+    return {};
+  } else if (size + 1 >= buffer.size()) [[unlikely]] {
+    return {buffer.data(), buffer.size() - 1};
+  } else {
+    buffer[size++] = ' ';
+  }
 
   if (name.empty()) {
-    buf[++size] = '\0';
+    buffer[size] = '\0';
   } else {
 #ifdef __LP64__
     constexpr auto name_offset = kNameOffset<void*>;
 #else
     auto name_offset = std::max(name_offset_, kNameOffset<void*>);
 #endif
-    if (auto space_size = static_cast<ssize_t>(name_offset) - static_cast<ssize_t>(size); space_size > 0) [[likely]] {
-      memset(&buf[size], ' ', space_size);
+    if (auto space_size = std::min<ssize_t>(name_offset, buffer.size()) - size; space_size > 0) [[likely]] {
+      memset(&buffer[size], ' ', space_size);
+      size += space_size;
+      if (auto name_size = std::min<ssize_t>(name.size(), buffer.size() - size); name_size > 0) [[likely]] {
+        memcpy(&buffer[size], name.data(), name_size);
+        size += name_size;
+        if (size < buffer.size()) [[likely]] {
+          buffer[size] = '\0';
+        }
+      }
     }
-
-    auto prefix_size = std::max(size + 1, name_offset);
-    auto name_size = std::min(name.size(), buf.size() - 1 - prefix_size);
-
-    memcpy(&buf[prefix_size], name.data(), name_size);
-
-    size = prefix_size + name_size;
-    buf[size] = '\0';
   }
 
-  return {buf.data(), size};
+  return {buffer.data(), static_cast<size_t>(size)};
 }
 
 }  // namespace io::proc
