@@ -89,7 +89,7 @@ class BaseReader {
   }
 
   BaseReader(const BaseReader&) = delete;
-  BaseReader& operator=(const BaseReader&) = delete;
+  void operator=(const BaseReader&) = delete;
 
   ~BaseReader() {
     if (fd_ >= 0 && owned_) [[likely]] {
@@ -109,7 +109,7 @@ class BaseReader {
 
  protected:
   template <typename Parser>
-  auto NextImpl(Parser&& parse_func) -> std::optional<T> {
+  auto NextImpl(Parser&& parse_func) -> std::optional<value_type> {
     if (fd_ < 0) [[unlikely]] {
       return {};
     }
@@ -135,7 +135,7 @@ class BaseReader {
 
       auto space = kBufferSize - buf_end_;
       if (space == 0) [[unlikely]] {
-        return static_cast<Derived*>(this)->OnBufferFull(&buffer_[0], buf_end_);
+        return static_cast<Derived*>(this)->OnBufferFull(&buffer_[0], std::exchange(buf_end_, 0));
       }
 
       ssize_t n;
@@ -166,6 +166,7 @@ constexpr bool kUseHeap = kBufferSize > kDefaultBufferSize;
 }  // namespace internal
 
 template <auto kBufferSize = internal::kDefaultBufferSize, auto kUseHeap = internal::kUseHeap<kBufferSize>>
+  requires(kBufferSize > 0)
 class FileReader
     : public internal::BaseReader<FileReader<kBufferSize, kUseHeap>, std::string_view, kBufferSize, kUseHeap> {
  public:
@@ -184,7 +185,7 @@ class FileReader
       }
 
       if (auto nl = static_cast<char*>(memchr(buf, '\n', available))) [[likely]] {
-        *nl = '\0';
+        // *nl = '\0';
         auto len = static_cast<size_t>(nl - buf);
         return std::pair{std::string_view{buf, len}, len + 1};
       }
@@ -238,6 +239,7 @@ struct DirEntry {
 };
 
 template <auto kBufferSize = internal::kDefaultBufferSize, auto kUseHeap = internal::kUseHeap<kBufferSize>>
+  requires(kBufferSize > offsetof(kernel_dirent64, d_name))
 class DirReader : public internal::BaseReader<DirReader<kBufferSize, kUseHeap>, DirEntry, kBufferSize, kUseHeap> {
  public:
   explicit DirReader(int fd) : DirReader::BaseReader{fd, false} {}

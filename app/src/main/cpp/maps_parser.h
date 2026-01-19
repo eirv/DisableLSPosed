@@ -58,7 +58,7 @@ class MapsParser {
   }
 
   MapsParser(const MapsParser&) = delete;
-  MapsParser& operator=(const MapsParser&) = delete;
+  void operator=(const MapsParser&) = delete;
 
   auto operator++() { return NextEntry(); }
   auto operator++(int) { return operator++(); }
