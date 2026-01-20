@@ -104,7 +104,7 @@ class BaseReader {
 
   BaseReader(int fd, bool owned) : fd_{fd}, owned_{owned} {
     if constexpr (kUseHeap) {
-      buffer_ = std::make_unique<char[]>(kBufferSize + kReservedBytes);
+      buffer_ = std::make_unique<uint8_t[]>(kBufferSize + kReservedBytes);
     }
   }
 
@@ -174,17 +174,17 @@ class BaseReader {
 
       auto space = kBufferSize - buf_end_;
       if (space == 0) [[unlikely]] {
-        return static_cast<Derived*>(this)->OnBufferFull(&buffer_[0], std::exchange(buf_end_, 0));
+        return Derived::OnBufferFull(&buffer_[0], std::exchange(buf_end_, 0));
       }
 
       ssize_t n;
       do {
-        n = static_cast<Derived*>(this)->ReadFromFD(fd_, &buffer_[buf_end_], space);
+        n = Derived::ReadFromFD(fd_, &buffer_[buf_end_], space);
       } while (n == -EINTR);
 
       if (n <= 0) [[unlikely]] {
         eof_ = true;
-        return static_cast<Derived*>(this)->OnEOF(&buffer_[0], buf_end_);
+        return Derived::OnEOF(&buffer_[0], buf_end_);
       }
 
       buf_end_ += static_cast<size_t>(n);
@@ -204,7 +204,7 @@ class BaseReader {
   bool eof_{};
   size_t buf_pos_{};
   size_t buf_end_{};
-  std::conditional_t<kUseHeap, std::unique_ptr<char[]>, std::array<char, kBufferSize + kReservedBytes>> buffer_;
+  std::conditional_t<kUseHeap, std::unique_ptr<uint8_t[]>, std::array<uint8_t, kBufferSize + kReservedBytes>> buffer_;
 };
 
 constexpr size_t kDefaultBufferSize = 16 * 1024;
@@ -235,7 +235,7 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
   auto operator++() { return NextLine(); }
 
   auto NextLine() -> std::optional<string_view_type> {
-    return this->NextImpl(+[](char* buf, size_t available) -> std::optional<std::pair<string_view_type, size_t>> {
+    return this->NextImpl(+[](uint8_t* buf, size_t available) -> std::optional<std::pair<string_view_type, size_t>> {
       if (!available) [[unlikely]] {
         return {};
       }
@@ -288,11 +288,11 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
   }
 
  private:
-  auto OnBufferFull(char* buf, size_t sz) -> std::optional<string_view_type> {
+  static auto OnBufferFull(uint8_t* buf, size_t sz) -> std::optional<string_view_type> {
     return string_view_type{reinterpret_cast<char_type*>(buf), reinterpret_cast<char_type*>(buf + sz)};
   }
 
-  auto OnEOF(char* buf, size_t sz) -> std::optional<string_view_type> {
+  static auto OnEOF(uint8_t* buf, size_t sz) -> std::optional<string_view_type> {
     if constexpr (sizeof(char_type) == 2) {
       sz &= ~1;
     } else if constexpr (sizeof(char_type) >= 4) {
@@ -303,7 +303,7 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
     return string_view_type{reinterpret_cast<char_type*>(buf), reinterpret_cast<char_type*>(buf + sz)};
   }
 
-  auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_read(fd, buf, sz); }
+  static auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_read(fd, buf, sz); }
 
   friend class FileReader::BaseReader;
 };
@@ -352,7 +352,7 @@ class DirReader : public internal::BaseReader<DirReader<kBufferSize, kUseHeap>, 
   auto operator++() { return NextEntry(); }
 
   auto NextEntry() -> std::optional<DirEntry> {
-    return this->NextImpl(+[](char* buf, size_t available) -> std::optional<std::pair<DirEntry, size_t>> {
+    return this->NextImpl(+[](uint8_t* buf, size_t available) -> std::optional<std::pair<DirEntry, size_t>> {
       if (available < offsetof(kernel_dirent64, d_name)) [[unlikely]] {
         return {};
       }
@@ -367,11 +367,13 @@ class DirReader : public internal::BaseReader<DirReader<kBufferSize, kUseHeap>, 
   }
 
  private:
-  auto OnBufferFull(char*, size_t) -> std::optional<DirEntry> { return {}; }
+  static auto OnBufferFull(uint8_t*, size_t) -> std::optional<DirEntry> { return {}; }
 
-  auto OnEOF(char*, size_t) -> std::optional<DirEntry> { return {}; }
+  static auto OnEOF(uint8_t*, size_t) -> std::optional<DirEntry> { return {}; }
 
-  auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_getdents64(fd, static_cast<kernel_dirent64*>(buf), sz); }
+  static auto ReadFromFD(int fd, void* buf, size_t sz) {
+    return raw_getdents64(fd, static_cast<kernel_dirent64*>(buf), sz);
+  }
 
   friend class DirReader::BaseReader;
 };
