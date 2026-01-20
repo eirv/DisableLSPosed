@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstring>
@@ -17,6 +18,36 @@
 namespace io {
 
 namespace internal {
+template <typename T = char, size_t N = 0>
+struct FixedString {
+  using value_type = T;
+
+  consteval FixedString() = default;
+
+  consteval FixedString(const value_type (&data)[N]) { std::copy_n(data, N - 1, data_); }
+
+  consteval auto operator*() const { return operator[](0); }
+
+  consteval auto operator[](size_t index) const {
+    static_assert(N > 1);
+    return data_[index];
+  }
+
+  consteval auto data() const { return data_; }
+
+  consteval auto size() const {
+    if constexpr (N == 0) {
+      return 0;
+    } else {
+      return N - 1;
+    }
+  }
+
+  consteval auto empty() const -> bool { return size() == 0; }
+
+  value_type data_[N != 0 ? N - 1 : N]{};
+};
+
 template <class Reader>
 class Iterator {
  public:
@@ -110,7 +141,7 @@ class BaseReader {
  protected:
   template <typename Parser>
   auto NextImpl(Parser&& parse_func) -> std::optional<value_type> {
-    if (fd_ < 0) [[unlikely]] {
+    if (eof_ || fd_ < 0) [[unlikely]] {
       return {};
     }
 
@@ -144,6 +175,7 @@ class BaseReader {
       } while (n == -EINTR);
 
       if (n <= 0) [[unlikely]] {
+        eof_ = true;
         return static_cast<Derived*>(this)->OnEOF(&buffer_[0], buf_end_);
       }
 
@@ -154,6 +186,7 @@ class BaseReader {
  private:
   int fd_;
   bool owned_;
+  bool eof_{};
   size_t buf_pos_{};
   size_t buf_end_{};
   std::conditional_t<kUseHeap, std::unique_ptr<char[]>, std::array<char, kBufferSize + 1>> buffer_;
@@ -165,11 +198,18 @@ template <size_t kBufferSize>
 constexpr bool kUseHeap = kBufferSize > kDefaultBufferSize;
 }  // namespace internal
 
-template <auto kBufferSize = internal::kDefaultBufferSize, auto kUseHeap = internal::kUseHeap<kBufferSize>>
-  requires(kBufferSize > 0)
-class FileReader
-    : public internal::BaseReader<FileReader<kBufferSize, kUseHeap>, std::string_view, kBufferSize, kUseHeap> {
+template <auto kBufferSize = internal::kDefaultBufferSize,
+          auto kUseHeap = internal::kUseHeap<kBufferSize>,
+          internal::FixedString kDelimiter = {}>
+  requires(kBufferSize > kDelimiter.size())
+class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap, kDelimiter>,
+                                               std::basic_string_view<typename decltype(kDelimiter)::value_type>,
+                                               kBufferSize,
+                                               kUseHeap> {
  public:
+  using char_type = typename decltype(kDelimiter)::value_type;
+  using string_view_type = std::basic_string_view<char_type>;
+
   explicit FileReader(int fd) : FileReader::BaseReader{fd, false} {}
   explicit FileReader(const char* pathname) : FileReader::BaseReader{raw_open(pathname, O_RDONLY | O_CLOEXEC), true} {}
 
@@ -178,28 +218,55 @@ class FileReader
 
   auto operator++() { return NextLine(); }
 
-  auto NextLine() -> std::optional<std::string_view> {
-    return this->NextImpl(+[](char* buf, size_t available) -> std::optional<std::pair<std::string_view, size_t>> {
+  auto NextLine() -> std::optional<string_view_type> {
+    return this->NextImpl(+[](char* buf, size_t available) -> std::optional<std::pair<string_view_type, size_t>> {
       if (!available) [[unlikely]] {
         return {};
       }
 
-      if (auto nl = static_cast<char*>(memchr(buf, '\n', available))) [[likely]] {
-        // *nl = '\0';
-        auto len = static_cast<size_t>(nl - buf);
-        return std::pair{std::string_view{buf, len}, len + 1};
+      void* next = nullptr;
+      if constexpr (std::is_same_v<char_type, char>) {
+        if constexpr (kDelimiter.empty()) {
+          next = memchr(buf, '\n', available);
+        } else if constexpr (kDelimiter.size() == sizeof(char_type)) {
+          next = memchr(buf, *kDelimiter, available);
+        } else {
+          next = memmem(buf, available, kDelimiter.data(), kDelimiter.size());
+        }
+      } else {
+        auto sv = string_view_type{reinterpret_cast<char_type*>(buf), reinterpret_cast<char_type*>(buf + available)};
+        auto pos = string_view_type::npos;
+        if constexpr (kDelimiter.empty()) {
+          pos = sv.find(static_cast<char_type>('\n'));
+        } else if constexpr (kDelimiter.size() == sizeof(char_type)) {
+          pos = sv.find(*kDelimiter);
+        } else {
+          pos = sv.find(kDelimiter.data(), 0, kDelimiter.size());
+        }
+        if (pos != string_view_type::npos) [[likely]] {
+          next = reinterpret_cast<char_type*>(buf) + pos;
+        }
+      }
+
+      if (next) [[likely]] {
+        // *next = '\0';
+        auto len = static_cast<size_t>(reinterpret_cast<char_type*>(next) - reinterpret_cast<char_type*>(buf));
+        return std::pair{string_view_type{reinterpret_cast<char_type*>(buf), len},
+                         (len + std::max<size_t>(kDelimiter.size(), 1)) * sizeof(char_type)};
       }
       return {};
     });
   }
 
  private:
-  auto OnBufferFull(char* buf, size_t sz) -> std::optional<std::string_view> { return std::string_view{buf, sz}; }
+  auto OnBufferFull(char* buf, size_t sz) -> std::optional<string_view_type> {
+    return string_view_type{reinterpret_cast<char_type*>(buf), reinterpret_cast<char_type*>(buf + sz)};
+  }
 
-  auto OnEOF(char* buf, size_t sz) -> std::optional<std::string_view> {
+  auto OnEOF(char* buf, size_t sz) -> std::optional<string_view_type> {
     if (sz == 0) return {};
-    buf[sz] = '\0';
-    return std::string_view{buf, sz};
+    // buf[sz] = '\0';
+    return string_view_type{reinterpret_cast<char_type*>(buf), reinterpret_cast<char_type*>(buf + sz)};
   }
 
   auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_read(fd, buf, sz); }
