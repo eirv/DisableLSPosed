@@ -194,10 +194,13 @@ class BaseReader {
  private:
   // String is not null-terminated by default.
   // One extra byte is reserved for user to add null terminator if required.
-  static constexpr size_t kReservedBytes =
-      is_string_view_v<value_type> ?
-          __builtin_align_up(kBufferSize + sizeof(typename value_type::value_type), sizeof(void*)) - kBufferSize :
-          0;
+  static constexpr auto kReservedBytes = [] consteval -> size_t {
+    if constexpr (is_string_view_v<value_type>) {
+      return __builtin_align_up(kBufferSize + sizeof(typename value_type::value_type), sizeof(void*)) - kBufferSize;
+    } else {
+      return 0;
+    }
+  }();
 
   int fd_;
   bool owned_;
@@ -216,8 +219,7 @@ constexpr bool kUseHeap = kBufferSize > kDefaultBufferSize;
 template <auto kBufferSize = internal::kDefaultBufferSize,
           auto kUseHeap = internal::kUseHeap<kBufferSize>,
           internal::FixedString kDelimiter = {}>
-  requires(kBufferSize > 0 &&
-           __builtin_align_down(kBufferSize, sizeof(typename decltype(kDelimiter)::value_type)) == kBufferSize)
+  requires(kBufferSize > 0 && kBufferSize % sizeof(typename decltype(kDelimiter)::value_type) == 0)
 class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap, kDelimiter>,
                                                std::basic_string_view<typename decltype(kDelimiter)::value_type>,
                                                kBufferSize,
@@ -240,15 +242,9 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
         return {};
       }
 
-      if constexpr (sizeof(char_type) == 2) {
-        available &= ~1;
+      if constexpr (sizeof(char_type) > 1) {
+        available &= ~static_cast<size_t>(sizeof(char_type) - 1);
         if (!available) [[unlikely]] {
-          return {};
-        }
-      } else if constexpr (sizeof(char_type) >= 4) {
-        if (auto aligned = __builtin_align_down(available, sizeof(char_type))) [[likely]] {
-          available = aligned;
-        } else {
           return {};
         }
       }
@@ -302,10 +298,8 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
   static auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_read(fd, buf, sz); }
 
   static constexpr auto AlignSize(size_t size) {
-    if constexpr (sizeof(char_type) == 2) {
-      return size & ~1;
-    } else if constexpr (sizeof(char_type) >= 4) {
-      return __builtin_align_down(size, sizeof(char_type));
+    if constexpr (sizeof(char_type) > 1) {
+      return size & ~static_cast<size_t>(sizeof(char_type) - 1);
     } else {
       return size;
     }
@@ -346,7 +340,7 @@ struct DirEntry {
 };
 
 template <auto kBufferSize = internal::kDefaultBufferSize, auto kUseHeap = internal::kUseHeap<kBufferSize>>
-  requires(kBufferSize > offsetof(kernel_dirent64, d_name))
+  requires(kBufferSize > offsetof(kernel_dirent64, d_name) && kBufferSize % sizeof(uint64_t) == 0)
 class DirReader : public internal::BaseReader<DirReader<kBufferSize, kUseHeap>, DirEntry, kBufferSize, kUseHeap> {
  public:
   explicit DirReader(int fd) : DirReader::BaseReader{fd, false} {}
