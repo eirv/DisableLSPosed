@@ -18,6 +18,15 @@
 namespace io {
 
 namespace internal {
+template <typename T>
+struct is_string_view : std::false_type {};
+
+template <typename CharT, typename Traits>
+struct is_string_view<std::basic_string_view<CharT, Traits>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool is_string_view_v = is_string_view<T>::value;
+
 template <typename T = char, size_t N = 0>
 struct FixedString {
   using value_type = T;
@@ -95,9 +104,8 @@ class BaseReader {
 
   BaseReader(int fd, bool owned) : fd_{fd}, owned_{owned} {
     if constexpr (kUseHeap) {
-      buffer_ = std::make_unique<char[]>(kBufferSize + 1);
+      buffer_ = std::make_unique<char[]>(kBufferSize + kReservedBytes);
     }
-    buffer_[kBufferSize] = '\0';
   }
 
   BaseReader(BaseReader&& other) noexcept
@@ -184,12 +192,19 @@ class BaseReader {
   }
 
  private:
+  // String is not null-terminated by default.
+  // One extra byte is reserved for user to add null terminator if required.
+  static constexpr size_t kReservedBytes =
+      is_string_view_v<value_type> ?
+          __builtin_align_up(kBufferSize + sizeof(typename value_type::value_type), sizeof(void*)) - kBufferSize :
+          0;
+
   int fd_;
   bool owned_;
   bool eof_{};
   size_t buf_pos_{};
   size_t buf_end_{};
-  std::conditional_t<kUseHeap, std::unique_ptr<char[]>, std::array<char, kBufferSize + 1>> buffer_;
+  std::conditional_t<kUseHeap, std::unique_ptr<char[]>, std::array<char, kBufferSize + kReservedBytes>> buffer_;
 };
 
 constexpr size_t kDefaultBufferSize = 16 * 1024;
@@ -201,7 +216,8 @@ constexpr bool kUseHeap = kBufferSize > kDefaultBufferSize;
 template <auto kBufferSize = internal::kDefaultBufferSize,
           auto kUseHeap = internal::kUseHeap<kBufferSize>,
           internal::FixedString kDelimiter = {}>
-  requires(kBufferSize > kDelimiter.size())
+  requires(kBufferSize > 0 &&
+           __builtin_align_down(kBufferSize, sizeof(typename decltype(kDelimiter)::value_type)) == kBufferSize)
 class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap, kDelimiter>,
                                                std::basic_string_view<typename decltype(kDelimiter)::value_type>,
                                                kBufferSize,
@@ -222,6 +238,19 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
     return this->NextImpl(+[](char* buf, size_t available) -> std::optional<std::pair<string_view_type, size_t>> {
       if (!available) [[unlikely]] {
         return {};
+      }
+
+      if constexpr (sizeof(char_type) == 2) {
+        available &= ~1;
+        if (!available) [[unlikely]] {
+          return {};
+        }
+      } else if constexpr (sizeof(char_type) >= 4) {
+        if (auto aligned = __builtin_align_down(available, sizeof(char_type))) [[likely]] {
+          available = aligned;
+        } else {
+          return {};
+        }
       }
 
       void* next = nullptr;
@@ -264,6 +293,11 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
   }
 
   auto OnEOF(char* buf, size_t sz) -> std::optional<string_view_type> {
+    if constexpr (sizeof(char_type) == 2) {
+      sz &= ~1;
+    } else if constexpr (sizeof(char_type) >= 4) {
+      sz = __builtin_align_down(sz, sizeof(char_type));
+    }
     if (sz == 0) return {};
     // buf[sz] = '\0';
     return string_view_type{reinterpret_cast<char_type*>(buf), reinterpret_cast<char_type*>(buf + sz)};
