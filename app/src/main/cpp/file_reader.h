@@ -289,21 +289,27 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
 
  private:
   static auto OnBufferFull(uint8_t* buf, size_t sz) -> std::optional<string_view_type> {
-    return string_view_type{reinterpret_cast<char_type*>(buf), reinterpret_cast<char_type*>(buf + sz)};
+    return string_view_type{reinterpret_cast<char_type*>(buf), reinterpret_cast<char_type*>(buf + AlignSize(sz))};
   }
 
   static auto OnEOF(uint8_t* buf, size_t sz) -> std::optional<string_view_type> {
-    if constexpr (sizeof(char_type) == 2) {
-      sz &= ~1;
-    } else if constexpr (sizeof(char_type) >= 4) {
-      sz = __builtin_align_down(sz, sizeof(char_type));
-    }
+    sz = AlignSize(sz);
     if (sz == 0) return {};
     // buf[sz] = '\0';
     return string_view_type{reinterpret_cast<char_type*>(buf), reinterpret_cast<char_type*>(buf + sz)};
   }
 
   static auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_read(fd, buf, sz); }
+
+  static constexpr auto AlignSize(size_t size) {
+    if constexpr (sizeof(char_type) == 2) {
+      return size & ~1;
+    } else if constexpr (sizeof(char_type) >= 4) {
+      return __builtin_align_down(size, sizeof(char_type));
+    } else {
+      return size;
+    }
+  }
 
   friend class FileReader::BaseReader;
 };
