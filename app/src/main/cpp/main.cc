@@ -339,44 +339,44 @@ auto GetLSPEntryMethod(void* entry_point) -> void* {
 #if defined(__aarch64__)
   auto code = static_cast<uint32_t*>(entry_point);
   for (size_t i = 0; 8 > i; ++i) {
-    if (code[i] != 0x58000060) continue;
-    if ((code[i + 1] & 0xFFF00FFF) != 0xF8400010) continue;
-    if (code[i + 2] != 0xD61F0200) continue;
+    if (0x58000060 != code[i]) continue;
+    if (0xF8400010 != (code[i + 1] & ~(0xFF << (44 % 32)))) continue;
+    if (0xD61F0200 != code[i + 2]) continue;
     return *reinterpret_cast<void**>(&code[i + 3]);
   }
 #elif defined(__arm__)
   auto code = static_cast<uint32_t*>(entry_point);
   for (size_t i = 0; 8 > i; ++i) {
-    if (code[i] != 0xE59F0000) continue;
-    if ((code[i + 1] & 0xFFFFFF00) != 0xE590FF00) continue;
+    if (0xE59F0000 != code[i]) continue;
+    if (0xE590F000 != (code[i + 1] & ~(0xFF << (32 % 32)))) continue;
     return *reinterpret_cast<void**>(&code[i + 2]);
   }
 #elif defined(__i386__)
   auto code = static_cast<uint8_t*>(entry_point);
   for (size_t i = 0; 32 > i; ++i) {
-    if (code[i] != 0xB8) continue;
-    if (code[i + 5] != 0xFF) continue;
-    if (code[i + 6] != 0x70) continue;
-    if (code[i + 8] != 0xC3) continue;
+    if (0xB8 != code[i]) continue;
+    if (0xFF != code[i + 5]) continue;
+    if (0x70 != code[i + 6]) continue;
+    if (0xC3 != code[i + 8]) continue;
     return *reinterpret_cast<void**>(&code[i + 1]);
   }
 #elif defined(__x86_64__)
   auto code = static_cast<uint8_t*>(entry_point);
   for (size_t i = 0; 32 > i; ++i) {
-    if (code[i] != 0x48) continue;
-    if (code[i + 1] != 0xBF) continue;
-    if (code[i + 10] != 0xFF) continue;
-    if (code[i + 11] != 0x77) continue;
-    if (code[i + 13] != 0xC3) continue;
+    if (0x48 != code[i]) continue;
+    if (0xBF != code[i + 1]) continue;
+    if (0xFF != code[i + 10]) continue;
+    if (0x77 != code[i + 11]) continue;
+    if (0xC3 != code[i + 13]) continue;
     return *reinterpret_cast<void**>(&code[i + 2]);
   }
 #elif defined(__riscv)
   auto code = static_cast<uint32_t*>(entry_point);
   for (size_t i = 0; 8 > i; ++i) {
-    if (code[i] != 0x00000517) continue;
-    if (code[i + 1] != 0x01053503) continue;
-    if ((code[i + 2] & 0xF00FFFFF) != 0x00053F83) continue;
-    if (code[i + 3] != 0x000F8067) continue;
+    if (0x00000517 != code[i]) continue;
+    if (0x01053503 != code[i + 1]) continue;
+    if (0x00053F83 != (code[i + 2] & ~(0xFF << (84 % 32)))) continue;
+    if (0x000F8067 != code[i + 3]) continue;
     return *reinterpret_cast<void**>(&code[i + 4]);
   }
 #endif
