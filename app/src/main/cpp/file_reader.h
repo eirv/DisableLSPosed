@@ -258,19 +258,19 @@ using DefaultStackBuffer = StackBuffer<16 * 1024>;
 using DefaultHeapBuffer = HeapBuffer<32 * 1024>;
 
 struct UTF8 {
-  static constexpr auto LF = internal::FixedString{};
+  static constexpr auto LF = internal::FixedString<char>{};
   static constexpr auto CR = internal::FixedString{"\r"};
   static constexpr auto CRLF = internal::FixedString{"\r\n"};
   static constexpr auto SPACE = internal::FixedString{" "};
 };
 struct UTF16 {
-  static constexpr auto LF = internal::FixedString{u"\n"};
+  static constexpr auto LF = internal::FixedString<char16_t>{};
   static constexpr auto CR = internal::FixedString{u"\r"};
   static constexpr auto CRLF = internal::FixedString{u"\r\n"};
   static constexpr auto SPACE = internal::FixedString{u" "};
 };
 struct UTF32 {
-  static constexpr auto LF = internal::FixedString{U"\n"};
+  static constexpr auto LF = internal::FixedString<char32_t>{};
   static constexpr auto CR = internal::FixedString{U"\r"};
   static constexpr auto CRLF = internal::FixedString{U"\r\n"};
   static constexpr auto SPACE = internal::FixedString{U" "};
@@ -315,6 +315,7 @@ static constexpr auto UTF32 = UTF32::LF;
  * @example **Custom Delimiters & Encodings**
  * @code
  * // Unix style (LF), explicitly specified
+ * for (auto line : FileReader<DefaultStackBuffer, UTF8>{"..."}) {}
  * for (auto line : FileReader<DefaultStackBuffer, UTF8::LF>{"..."}) {}
  *
  * // Windows style (CRLF)
@@ -331,7 +332,7 @@ static constexpr auto UTF32 = UTF32::LF;
  * The return type of `line` changes based on the delimiter type:
  * @code
  * // 1. char -> std::string_view
- * FileReader<DefaultStackBuffer, "\n">       // Equivalent to UTF8::LF
+ * FileReader<DefaultStackBuffer, "\n">       // Equivalent to UTF8 and UTF8::LF
  * FileReader<DefaultStackBuffer, "\r\n">     // Equivalent to UTF8::CRLF
  *
  * // 2. wchar_t -> std::wstring_view
@@ -341,10 +342,10 @@ static constexpr auto UTF32 = UTF32::LF;
  * FileReader<DefaultStackBuffer, u8"\n">
  *
  * // 4. char16_t -> std::u16string_view
- * FileReader<DefaultStackBuffer, u"\n">    // Equivalent to UTF16::CRLF
+ * FileReader<DefaultStackBuffer, u"\r\n">    // Equivalent to UTF16::CRLF
  *
  * // 5. char32_t -> std::u32string_view
- * FileReader<DefaultStackBuffer, U"\n">
+ * FileReader<DefaultStackBuffer, U"\n">      // Equivalent to UTF32 and UTF32::LF
  * @endcode
  *
  * @warning The returned string_view points to the internal buffer. Do not store
@@ -396,7 +397,7 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
           next = reinterpret_cast<char_type*>(buf) + pos;
         }
       } else if constexpr (kDelimiter.empty()) {
-        next = memchr(buf, '\n', available);
+        next = memchr(buf, GetDefaultDelimiter(), available);
       } else if constexpr (kDelimiter.size() == sizeof(char_type)) {
         next = memchr(buf, *kDelimiter, available);
       } else {
