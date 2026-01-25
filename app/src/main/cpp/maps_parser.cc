@@ -15,13 +15,37 @@
 namespace io::proc {
 
 namespace {
-auto procmap_query_failed_ = bool{};
-#ifndef __LP64__
-auto name_offset_ = size_t{};
-#endif
-
 template <typename T>
 constexpr size_t kNameOffset = 25 + sizeof(T) * 6;
+constexpr size_t kMaxPrefixSize = 95;
+
+auto procmap_query_failed_ = bool{};
+#ifndef __LP64__
+auto name_offset_ = [] -> size_t {
+  auto smaps_rollup = raw_open("/proc/self/smaps_rollup", O_RDONLY | O_CLOEXEC);
+  if (smaps_rollup < 0) [[unlikely]] {
+    return 0;
+  }
+
+  std::array<char, kNameOffset<uint64_t> + 1> buffer;
+
+  ssize_t nread;
+  do {
+    nread = raw_read(smaps_rollup, buffer.data(), buffer.size());
+  } while (nread != -EINTR);
+  raw_close(smaps_rollup);
+
+  if (nread != buffer.size()) [[unlikely]] {
+    return 0;
+  } else if (buffer[kNameOffset<uint64_t>] == '[') [[likely]] {
+    return kNameOffset<uint64_t>;
+  } else if (buffer[kNameOffset<uint32_t>] == '[') [[likely]] {
+    return kNameOffset<uint32_t>;
+  } else {
+    return 0;
+  }
+}();
+#endif
 
 template <typename T>
   requires(std::is_integral_v<T> && std::is_unsigned_v<T>)
@@ -128,24 +152,29 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
     auto dev_minor = FastParseHex<uint32_t>(&current);
     auto inode = static_cast<uint64_t>(strtoull(current, const_cast<char**>(&current), 10));
 
+    auto name_offset = static_cast<size_t>(current - line->data() + 1);
 #ifdef __LP64__
-    auto name = line->size() > kNameOffset<void*> ? line->substr(kNameOffset<void*>) : std::string_view{};
+    name_offset = std::max(name_offset, kNameOffset<void*>);
+    auto name = line->size() > name_offset ? line->substr(name_offset) : std::string_view{};
 #else
     auto name = std::string_view{};
     if (name_offset_) [[likely]] {
-      if (line->size() > name_offset_) {
-        name = line->substr(name_offset_);
+      name_offset = std::max({name_offset, name_offset_, kNameOffset<void*>});
+      if (line->size() > name_offset) {
+        name = line->substr(name_offset);
       }
-    } else if (line->size() > kNameOffset<void*>) {
+    } else if (name_offset >= kNameOffset<uint64_t>) [[unlikely]] {
+      name = line->substr(name_offset);
+    } else if (line->size() > std::max(name_offset, kNameOffset<void*>)) {
       auto data = line->data();
-      auto pos = std::max(kNameOffset<void*>, static_cast<size_t>(current - data));
-      if (data[pos] == ' ' && line->size() > kNameOffset<uint64_t> && data[kNameOffset<uint64_t> - 1] == ' ')
-          [[likely]] {
-        name_offset_ = kNameOffset<uint64_t>;
+      if (line->size() > kNameOffset<uint64_t> && data[kNameOffset<uint64_t> - 1] == ' ' &&
+          data[kNameOffset<uint64_t>] != ' ') [[likely]] {
+        name_offset = kNameOffset<uint64_t>;
       } else {
-        name_offset_ = kNameOffset<uint32_t>;
+        name_offset = kNameOffset<uint32_t>;
       }
-      name = line->substr(name_offset_);
+      name = line->substr(name_offset);
+      name_offset_ = name_offset;
     }
 #endif
 
@@ -170,7 +199,7 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
 }
 
 auto VmaEntry::get_line() const -> std::string {
-  std::array<char, kNameOffset<uint64_t> + PATH_MAX + 1> buffer;
+  std::array<char, kMaxPrefixSize + PATH_MAX + 1> buffer;
   return std::string{get_line(buffer)};
 }
 
