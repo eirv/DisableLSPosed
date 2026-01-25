@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <concepts>
 #include <cstring>
 #include <iterator>
 #include <memory>
@@ -16,7 +17,6 @@
 #include "linux_syscall_support.h"
 
 namespace io {
-
 namespace internal {
 template <typename T>
 struct is_string_view : std::false_type {};
@@ -26,6 +26,20 @@ struct is_string_view<std::basic_string_view<CharT, Traits>> : std::true_type {}
 
 template <typename T>
 inline constexpr bool is_string_view_v = is_string_view<T>::value;
+
+template <typename T>
+concept IndexableAddressable = requires(T t, std::size_t i) {
+  { &t[i] } -> std::same_as<uint8_t*>;
+};
+
+template <typename T>
+concept BufferPolicy = requires {
+  { T::size } -> std::convertible_to<std::size_t>;
+
+  typename T::template type<T::size>;
+
+  { T::template make_buffer<T::size>() } -> std::same_as<typename T::template type<T::size>>;
+} && IndexableAddressable<typename T::template type<T::size>>;
 
 template <typename T = char, size_t N = 0>
 struct FixedString {
@@ -96,17 +110,14 @@ class Iterator {
   value_type current_{};
 };
 
-template <class Derived, class T, size_t kBufferSize, bool kUseHeap>
+template <class Derived, class T, class Buffer>
 class BaseReader {
  public:
   using value_type = T;
   using iterator = Iterator<Derived>;
 
-  BaseReader(int fd, bool owned) : fd_{fd}, owned_{owned} {
-    if constexpr (kUseHeap) {
-      buffer_ = std::make_unique<uint8_t[]>(kBufferSize + kReservedBytes);
-    }
-  }
+  BaseReader(int fd, bool owned)
+      : fd_{fd}, owned_{owned}, buffer_{Buffer::template make_buffer<kBufferSize + kReservedBytes>()} {}
 
   BaseReader(BaseReader&& other) noexcept
       : fd_{std::exchange(other.fd_, -1)},
@@ -192,6 +203,8 @@ class BaseReader {
   }
 
  private:
+  static constexpr size_t kBufferSize = Buffer::size;
+
   // String is not null-terminated by default.
   // One extra byte is reserved for user to add null terminator if required.
   static constexpr auto kReservedBytes = [] consteval -> size_t {
@@ -207,23 +220,142 @@ class BaseReader {
   bool eof_{};
   size_t buf_pos_{};
   size_t buf_end_{};
-  std::conditional_t<kUseHeap, std::unique_ptr<uint8_t[]>, std::array<uint8_t, kBufferSize + kReservedBytes>> buffer_;
+  typename Buffer::template type<kBufferSize + kReservedBytes> buffer_;
 };
-
-constexpr size_t kDefaultBufferSize = 16 * 1024;
-
-template <size_t kBufferSize>
-constexpr bool kUseHeap = kBufferSize > kDefaultBufferSize;
 }  // namespace internal
 
-template <auto kBufferSize = internal::kDefaultBufferSize,
-          auto kUseHeap = internal::kUseHeap<kBufferSize>,
-          internal::FixedString kDelimiter = {}>
-  requires(kBufferSize > 0 && kBufferSize % sizeof(typename decltype(kDelimiter)::value_type) == 0)
-class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap, kDelimiter>,
+template <size_t N>
+struct StackBuffer {
+  template <size_t kBufferSize = N>
+  using type = std::array<uint8_t, kBufferSize>;
+
+  static constexpr auto size = N;
+
+  template <size_t kBufferSize = N>
+  static constexpr auto make_buffer() -> type<kBufferSize> {
+    return {};
+  }
+
+  StackBuffer() = delete;
+};
+
+template <size_t N>
+struct HeapBuffer {
+  template <size_t kBufferSize = N>
+  using type = std::unique_ptr<uint8_t[]>;
+
+  static constexpr auto size = N;
+
+  template <size_t kBufferSize = N>
+  static constexpr auto make_buffer() -> type<kBufferSize> {
+    return std::make_unique<uint8_t[]>(kBufferSize);
+  }
+
+  HeapBuffer() = delete;
+};
+
+using DefaultStackBuffer = StackBuffer<16 * 1024>;
+using DefaultHeapBuffer = HeapBuffer<32 * 1024>;
+
+struct UTF8 {
+  static constexpr auto LF = internal::FixedString{};
+  static constexpr auto CR = internal::FixedString{"\r"};
+  static constexpr auto CRLF = internal::FixedString{"\r\n"};
+  static constexpr auto SPACE = internal::FixedString{" "};
+};
+struct UTF16 {
+  static constexpr auto LF = internal::FixedString{u"\n"};
+  static constexpr auto CR = internal::FixedString{u"\r"};
+  static constexpr auto CRLF = internal::FixedString{u"\r\n"};
+  static constexpr auto SPACE = internal::FixedString{u" "};
+};
+struct UTF32 {
+  static constexpr auto LF = internal::FixedString{U"\n"};
+  static constexpr auto CR = internal::FixedString{U"\r"};
+  static constexpr auto CRLF = internal::FixedString{U"\r\n"};
+  static constexpr auto SPACE = internal::FixedString{U" "};
+};
+
+static constexpr auto UTF8 = UTF8::LF;
+static constexpr auto UTF16 = UTF16::LF;
+static constexpr auto UTF32 = UTF32::LF;
+
+/**
+ * @brief A high-performance, flexible file reader designed for range-based loops.
+ *
+ * The FileReader class allows iterating over a file line-by-line (or token-by-token)
+ * with zero-copy semantics where possible. It supports customizable memory allocation
+ * strategies (Stack vs. Heap) and flexible delimiter/encoding handling.
+ *
+ * The type of the yielded `line` (e.g., std::string_view, std::wstring_view) is
+ * automatically deduced based on the provided delimiter's character type.
+ *
+ * @tparam Buffer Controls how the internal buffer is allocated.
+ * Options: DefaultStackBuffer, StackBuffer<Size>, DefaultHeapBuffer, HeapBuffer<Size>.
+ * @tparam kDelimiter Defines the separator and the character encoding.
+ * Can be a predefined constant (e.g., UTF8::LF) or a string literal.
+ *
+ * @example **Basic Usage (Buffering Strategies)**
+ * @code
+ * // 1. Default Stack Buffer (Fastest, suitable for typical line lengths)
+ * for (auto line : FileReader<DefaultStackBuffer>{"/path/to/file"}) {
+ * // line is std::string_view
+ * }
+ *
+ * // 2. Custom Size Stack Buffer (e.g., 1024 bytes)
+ * for (auto line : FileReader<StackBuffer<1024>>{"/path/to/file"}) {}
+ *
+ * // 3. Default Heap Buffer (Suitable for large files or limited stack environments)
+ * for (auto line : FileReader<DefaultHeapBuffer>{"/path/to/file"}) {}
+ *
+ * // 4. Custom Size Heap Buffer
+ * for (auto line : FileReader<HeapBuffer<4096>>{"/path/to/file"}) {}
+ * @endcode
+ *
+ * @example **Custom Delimiters & Encodings**
+ * @code
+ * // Unix style (LF), explicitly specified
+ * for (auto line : FileReader<DefaultStackBuffer, UTF8::LF>{"..."}) {}
+ *
+ * // Windows style (CRLF)
+ * for (auto line : FileReader<DefaultStackBuffer, UTF8::CRLF>{"..."}) {}
+ *
+ * // Mac style (CR)
+ * for (auto line : FileReader<DefaultStackBuffer, UTF8::CR>{"..."}) {}
+ *
+ * // Custom separator (e.g., Space)
+ * for (auto line : FileReader<DefaultStackBuffer, UTF8::SPACE>{"..."}) {}
+ * @endcode
+ *
+ * @example **Type Deduction via Literals**
+ * The return type of `line` changes based on the delimiter type:
+ * @code
+ * // 1. char -> std::string_view
+ * FileReader<DefaultStackBuffer, "\n">       // Equivalent to UTF8::LF
+ * FileReader<DefaultStackBuffer, "\r\n">     // Equivalent to UTF8::CRLF
+ *
+ * // 2. wchar_t -> std::wstring_view
+ * FileReader<DefaultStackBuffer, L"\n">
+ *
+ * // 3. char8_t (C++20) -> std::u8string_view
+ * FileReader<DefaultStackBuffer, u8"\n">
+ *
+ * // 4. char16_t -> std::u16string_view
+ * FileReader<DefaultStackBuffer, u"\n">    // Equivalent to UTF16::CRLF
+ *
+ * // 5. char32_t -> std::u32string_view
+ * FileReader<DefaultStackBuffer, U"\n">
+ * @endcode
+ *
+ * @warning The returned string_view points to the internal buffer. Do not store
+ * the view itself outside the loop iteration, as the buffer content changes or
+ * gets overwritten as reading progresses.
+ */
+template <internal::BufferPolicy Buffer = DefaultStackBuffer, internal::FixedString kDelimiter = UTF8::LF>
+  requires(Buffer::size > 0 && Buffer::size % sizeof(typename decltype(kDelimiter)::value_type) == 0)
+class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
                                                std::basic_string_view<typename decltype(kDelimiter)::value_type>,
-                                               kBufferSize,
-                                               kUseHeap> {
+                                               Buffer> {
  public:
   using char_type = typename decltype(kDelimiter)::value_type;
   using string_view_type = std::basic_string_view<char_type>;
@@ -250,19 +382,11 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
       }
 
       void* next = nullptr;
-      if constexpr (std::is_same_v<char_type, char>) {
-        if constexpr (kDelimiter.empty()) {
-          next = memchr(buf, '\n', available);
-        } else if constexpr (kDelimiter.size() == sizeof(char_type)) {
-          next = memchr(buf, *kDelimiter, available);
-        } else {
-          next = memmem(buf, available, kDelimiter.data(), kDelimiter.size());
-        }
-      } else {
+      if constexpr (!std::is_same_v<char_type, char>) {
         auto sv = string_view_type{reinterpret_cast<char_type*>(buf), reinterpret_cast<char_type*>(buf + available)};
         auto pos = string_view_type::npos;
         if constexpr (kDelimiter.empty()) {
-          pos = sv.find(static_cast<char_type>('\n'));
+          pos = sv.find(GetDefaultDelimiter());
         } else if constexpr (kDelimiter.size() == sizeof(char_type)) {
           pos = sv.find(*kDelimiter);
         } else {
@@ -271,6 +395,12 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
         if (pos != string_view_type::npos) [[likely]] {
           next = reinterpret_cast<char_type*>(buf) + pos;
         }
+      } else if constexpr (kDelimiter.empty()) {
+        next = memchr(buf, '\n', available);
+      } else if constexpr (kDelimiter.size() == sizeof(char_type)) {
+        next = memchr(buf, *kDelimiter, available);
+      } else {
+        next = memmem(buf, available, kDelimiter.data(), kDelimiter.size());
       }
 
       if (next) [[likely]] {
@@ -296,6 +426,20 @@ class FileReader : public internal::BaseReader<FileReader<kBufferSize, kUseHeap,
   }
 
   static auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_read(fd, buf, sz); }
+
+  static consteval auto GetDefaultDelimiter() {
+    if constexpr (std::is_same_v<char_type, char>) {
+      return '\n';
+    } else if constexpr (std::is_same_v<char_type, wchar_t>) {
+      return L'\n';
+    } else if constexpr (std::is_same_v<char_type, char8_t>) {
+      return u8'\n';
+    } else if constexpr (std::is_same_v<char_type, char16_t>) {
+      return u'\n';
+    } else if constexpr (std::is_same_v<char_type, char32_t>) {
+      return U'\n';
+    }
+  }
 
   static constexpr auto AlignSize(size_t size) {
     if constexpr (sizeof(char_type) > 1) {
@@ -339,9 +483,9 @@ struct DirEntry {
   [[nodiscard]] auto is_socket() const { return type() == DirEntryType::kSocket; }
 };
 
-template <auto kBufferSize = internal::kDefaultBufferSize, auto kUseHeap = internal::kUseHeap<kBufferSize>>
-  requires(kBufferSize > offsetof(kernel_dirent64, d_name) && kBufferSize % sizeof(uint64_t) == 0)
-class DirReader : public internal::BaseReader<DirReader<kBufferSize, kUseHeap>, DirEntry, kBufferSize, kUseHeap> {
+template <internal::BufferPolicy Buffer = DefaultStackBuffer>
+  requires(Buffer::size > offsetof(kernel_dirent64, d_name) && Buffer::size % sizeof(uint64_t) == 0)
+class DirReader : public internal::BaseReader<DirReader<Buffer>, DirEntry, Buffer> {
  public:
   explicit DirReader(int fd) : DirReader::BaseReader{fd, false} {}
   explicit DirReader(const char* pathname) : DirReader::BaseReader{raw_open(pathname, O_DIRECTORY | O_CLOEXEC), true} {}

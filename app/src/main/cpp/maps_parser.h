@@ -78,7 +78,7 @@ class MapsParser {
     kCompleted,
   };
 
-  FileReader<16 * 1024, true> maps_reader_;
+  FileReader<DefaultHeapBuffer> maps_reader_;
   Status status_{Status::kTryIoctl};
 
   std::array<char, 0x1000> name_buffer_{};
