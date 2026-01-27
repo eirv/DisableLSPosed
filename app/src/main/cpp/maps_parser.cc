@@ -4,16 +4,45 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <climits>
+#include <concepts>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <type_traits>
 
 #include "linux_syscall_support.h"
 
-namespace io::proc {
+#ifndef PROCMAP_QUERY
+#define PROCMAP_QUERY 0xc0686611
 
+enum procmap_query_flags {
+  PROCMAP_QUERY_VMA_READABLE = 0x01,
+  PROCMAP_QUERY_VMA_WRITABLE = 0x02,
+  PROCMAP_QUERY_VMA_EXECUTABLE = 0x04,
+  PROCMAP_QUERY_VMA_SHARED = 0x08,
+  PROCMAP_QUERY_COVERING_OR_NEXT_VMA = 0x10,
+  PROCMAP_QUERY_FILE_BACKED_VMA = 0x20,
+};
+
+struct procmap_query {
+  uint64_t size;
+  uint64_t query_flags;
+  uint64_t query_addr;
+  uint64_t vma_start;
+  uint64_t vma_end;
+  uint64_t vma_flags;
+  uint64_t vma_page_size;
+  uint64_t vma_offset;
+  uint64_t inode;
+  uint32_t dev_major;
+  uint32_t dev_minor;
+  uint32_t vma_name_size;
+  uint32_t build_id_size;
+  uint64_t vma_name_addr;
+  uint64_t build_id_addr;
+};
+#endif
+
+namespace io::proc {
 namespace {
 template <typename T>
 constexpr size_t kNameOffset = 25 + sizeof(T) * 6;
@@ -35,20 +64,18 @@ auto name_offset_ = [] -> size_t {
   } while (nread != -EINTR);
   raw_close(smaps_rollup);
 
-  if (nread != buffer.size()) [[unlikely]] {
-    return 0;
-  } else if (buffer[kNameOffset<uint64_t>] == '[') [[likely]] {
-    return kNameOffset<uint64_t>;
-  } else if (buffer[kNameOffset<uint32_t>] == '[') [[likely]] {
-    return kNameOffset<uint32_t>;
-  } else {
-    return 0;
+  if (nread == buffer.size()) [[likely]] {
+    if (buffer[kNameOffset<uint64_t>] == '[') [[likely]] {
+      return kNameOffset<uint64_t>;
+    } else if (buffer[kNameOffset<uint32_t>] == '[') [[likely]] {
+      return kNameOffset<uint32_t>;
+    }
   }
+  return 0;
 }();
 #endif
 
-template <typename T>
-  requires(std::is_integral_v<T> && std::is_unsigned_v<T>)
+template <std::unsigned_integral T>
 auto FastParseHex(const char** p) {
   T value{};
   for (auto s = *p;;) {
@@ -58,7 +85,7 @@ auto FastParseHex(const char** p) {
     if (c >= '0' && c <= '9') {
       digit = static_cast<T>(c - '0');
     } else if (c >= 'a' && c <= 'f') {
-      digit = static_cast<T>(c - 'a' + 10);
+      digit = static_cast<T>(c - 'a') + T{10};
     } else {
       *p = s + 1;
       return value;
@@ -263,5 +290,4 @@ auto VmaEntry::get_line(std::span<char> buffer) const -> std::string_view {
 
   return {buffer.data(), cursor};
 }
-
 }  // namespace io::proc

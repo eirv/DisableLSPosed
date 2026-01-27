@@ -1,7 +1,6 @@
 #pragma once
 
 #include <array>
-#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -10,7 +9,6 @@
 #include "file_reader.h"
 
 namespace io::proc {
-
 static constexpr uint32_t kVmaRead = 0x01;
 static constexpr uint32_t kVmaWrite = 0x02;
 static constexpr uint32_t kVmaExec = 0x04;
@@ -30,8 +28,9 @@ struct VmaEntry {
   uint64_t inode;
   std::string_view name;
 
-  auto get_line() const -> std::string;
-  auto get_line(std::span<char> buffer) const -> std::string_view;
+  [[nodiscard]] auto get_line() const -> std::string;
+
+  [[nodiscard]] auto get_line(std::span<char> buffer) const -> std::string_view;
 };
 
 class MapsParser {
@@ -44,15 +43,15 @@ class MapsParser {
   MapsParser(MapsParser&& other) noexcept
       : maps_reader_{std::move(other.maps_reader_)},
         status_{other.status_},
-        name_buffer_{std::move(other.name_buffer_)},
-        query_buffer_{std::move(other.query_buffer_)} {}
+        name_buffer_{other.name_buffer_},
+        query_buffer_{other.query_buffer_} {}
 
   auto operator=(MapsParser&& other) noexcept -> auto& {
     if (this != &other) {
       maps_reader_ = std::move(other.maps_reader_);
       status_ = other.status_;
-      name_buffer_ = std::move(other.name_buffer_);
-      query_buffer_ = std::move(other.query_buffer_);
+      name_buffer_ = other.name_buffer_;
+      query_buffer_ = other.query_buffer_;
     }
     return *this;
   }
@@ -63,11 +62,11 @@ class MapsParser {
   auto operator++() { return NextEntry(); }
   auto operator++(int) { return operator++(); }
 
-  auto IsValid() const noexcept { return maps_reader_.IsValid(); }
+  [[nodiscard]] auto IsValid() const noexcept { return maps_reader_.IsValid(); }
   operator bool() const noexcept { return IsValid(); }
 
-  auto begin() { return iterator{this}; }
-  auto end() { return iterator{}; }
+  [[nodiscard]] auto begin() { return iterator{this}; }
+  [[nodiscard]] auto end() { return iterator{}; }
 
   auto NextEntry() -> std::optional<VmaEntry>;
 
@@ -84,5 +83,4 @@ class MapsParser {
   std::array<char, 0x1000> name_buffer_{};
   std::array<uint64_t, 13> query_buffer_{};
 };
-
 }  // namespace io::proc
