@@ -1,6 +1,7 @@
 #pragma once
 
 #include <dirent.h>
+#include <sys/mman.h>
 
 #include <algorithm>
 #include <array>
@@ -224,14 +225,14 @@ class BaseReader {
 };
 }  // namespace internal
 
-template <size_t N>
+template <size_t kDefaultBufferSize>
 struct StackBuffer {
-  template <size_t kBufferSize = N>
+  template <size_t kBufferSize = kDefaultBufferSize>
   using type = std::array<uint8_t, kBufferSize>;
 
-  static constexpr auto size = N;
+  static constexpr auto size = kDefaultBufferSize;
 
-  template <size_t kBufferSize = N>
+  template <size_t kBufferSize = kDefaultBufferSize>
   static constexpr auto make_buffer() -> type<kBufferSize> {
     return {};
   }
@@ -239,14 +240,14 @@ struct StackBuffer {
   StackBuffer() = delete;
 };
 
-template <size_t N>
+template <size_t kDefaultBufferSize>
 struct HeapBuffer {
-  template <size_t kBufferSize = N>
+  template <size_t kBufferSize = kDefaultBufferSize>
   using type = std::unique_ptr<uint8_t[]>;
 
-  static constexpr auto size = N;
+  static constexpr auto size = kDefaultBufferSize;
 
-  template <size_t kBufferSize = N>
+  template <size_t kBufferSize = kDefaultBufferSize>
   static constexpr auto make_buffer() -> type<kBufferSize> {
     return std::make_unique<uint8_t[]>(kBufferSize);
   }
@@ -254,8 +255,55 @@ struct HeapBuffer {
   HeapBuffer() = delete;
 };
 
+template <size_t kDefaultBufferSize>
+struct MMapBuffer {
+  template <size_t kBufferSize = kDefaultBufferSize>
+  using type = MMapBuffer<kBufferSize>;
+
+  static constexpr auto size = kDefaultBufferSize;
+
+  template <size_t kBufferSize = kDefaultBufferSize>
+    requires(kBufferSize > 0)
+  static constexpr auto make_buffer() -> type<kBufferSize> {
+    return {};
+  }
+
+  auto operator[](size_t index) -> auto& { return base_[index]; }
+
+  MMapBuffer(MMapBuffer&& other) noexcept : base_{std::exchange(other.base_, nullptr)} {}
+
+  auto operator=(MMapBuffer&& other) noexcept -> auto& {
+    if (this != &other) {
+      if (base_) raw_munmap(base_, kDefaultBufferSize);
+      base_ = std::exchange(other.base_, nullptr);
+    }
+    return *this;
+  }
+
+  MMapBuffer() {
+    auto base = raw_mmap(nullptr, kDefaultBufferSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (reinterpret_cast<uintptr_t>(base) < -4095UL) [[likely]] {
+      base_ = static_cast<uint8_t*>(base);
+    }
+  }
+
+  ~MMapBuffer() {
+    if (base_) [[likely]] {
+      raw_munmap(base_, kDefaultBufferSize);
+    }
+  }
+
+ private:
+  MMapBuffer(const MMapBuffer&) = delete;
+  void operator=(const MMapBuffer&) = delete;
+
+  uint8_t* base_{};
+};
+
 using DefaultStackBuffer = StackBuffer<16 * 1024>;
 using DefaultHeapBuffer = HeapBuffer<32 * 1024>;
+using DefaultMMapBuffer = MMapBuffer<64 * 1024>;
+using DefaultBuffer = DefaultStackBuffer;
 
 struct UTF8 {
   static constexpr auto LF = internal::FixedString<char>{};
@@ -352,7 +400,7 @@ static constexpr auto UTF32 = UTF32::LF;
  * the view itself outside the loop iteration, as the buffer content changes or
  * gets overwritten as reading progresses.
  */
-template <internal::BufferPolicy Buffer = DefaultStackBuffer, internal::FixedString kDelimiter = UTF8::LF>
+template <internal::BufferPolicy Buffer = DefaultBuffer, internal::FixedString kDelimiter = UTF8::LF>
   requires(Buffer::size > 0 && Buffer::size % sizeof(typename decltype(kDelimiter)::value_type) == 0)
 class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
                                                std::basic_string_view<typename decltype(kDelimiter)::value_type>,
@@ -376,7 +424,7 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
       }
 
       if constexpr (sizeof(char_type) > 1) {
-        available &= ~static_cast<size_t>(sizeof(char_type) - 1);
+        available = AlignSize(available);
         if (!available) [[unlikely]] {
           return {};
         }
@@ -388,7 +436,7 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
         auto pos = string_view_type::npos;
         if constexpr (kDelimiter.empty()) {
           pos = sv.find(GetDefaultDelimiter());
-        } else if constexpr (kDelimiter.size() == sizeof(char_type)) {
+        } else if constexpr (kDelimiter.size() == 1) {
           pos = sv.find(*kDelimiter);
         } else {
           pos = sv.find(kDelimiter.data(), 0, kDelimiter.size());
@@ -398,7 +446,7 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
         }
       } else if constexpr (kDelimiter.empty()) {
         next = memchr(buf, GetDefaultDelimiter(), available);
-      } else if constexpr (kDelimiter.size() == sizeof(char_type)) {
+      } else if constexpr (kDelimiter.size() == 1) {
         next = memchr(buf, *kDelimiter, available);
       } else {
         next = memmem(buf, available, kDelimiter.data(), kDelimiter.size());
@@ -484,7 +532,7 @@ struct DirEntry {
   [[nodiscard]] auto is_socket() const { return type() == DirEntryType::kSocket; }
 };
 
-template <internal::BufferPolicy Buffer = DefaultStackBuffer>
+template <internal::BufferPolicy Buffer = DefaultBuffer>
   requires(Buffer::size > offsetof(kernel_dirent64, d_name) && Buffer::size % sizeof(uint64_t) == 0)
 class DirReader : public internal::BaseReader<DirReader<Buffer>, DirEntry, Buffer> {
  public:
