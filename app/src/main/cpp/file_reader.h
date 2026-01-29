@@ -174,6 +174,13 @@ class BaseReader {
   [[nodiscard]] auto IsValid() const noexcept { return fd_ >= 0; }
   [[nodiscard]] auto GetFd() const noexcept { return fd_; }
 
+  void Reduce() {
+    auto rem = buf_end_ - buf_pos_;
+    memmove(&buffer_[0], &buffer_[buf_pos_], rem);
+    buf_end_ = rem;
+    buf_pos_ = 0;
+  }
+
   [[nodiscard]] auto begin() { return iterator{static_cast<Derived*>(this)}; }
   [[nodiscard]] auto end() { return iterator{}; }
 
@@ -194,10 +201,7 @@ class BaseReader {
       }
 
       if (buf_pos_ > 0 && buf_pos_ < buf_end_) [[likely]] {
-        auto rem = buf_end_ - buf_pos_;
-        memmove(&buffer_[0], &buffer_[buf_pos_], rem);
-        buf_end_ = rem;
-        buf_pos_ = 0;
+        Reduce();
       } else if (buf_pos_ == buf_end_) {
         buf_pos_ = buf_end_ = 0;
       }
