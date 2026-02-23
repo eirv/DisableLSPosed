@@ -464,7 +464,7 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
                                    reinterpret_cast<const char_type*>(buf + available)};
         auto pos = string_view_type::npos;
         if constexpr (kDelimiter.empty()) {
-          pos = sv.find(GetDefaultDelimiter());
+          pos = sv.find(kDefaultDelimiter);
         } else if constexpr (kDelimiter.size() == 1) {
           pos = sv.find(*kDelimiter);
         } else {
@@ -474,7 +474,7 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
           next = reinterpret_cast<const char_type*>(buf) + pos;
         }
       } else if constexpr (kDelimiter.empty()) {
-        next = memchr(buf, GetDefaultDelimiter(), available);
+        next = memchr(buf, kDefaultDelimiter, available);
       } else if constexpr (kDelimiter.size() == 1) {
         next = memchr(buf, *kDelimiter, available);
       } else {
@@ -491,6 +491,20 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
   }
 
  private:
+  static constexpr auto kDefaultDelimiter = [] consteval {
+    if constexpr (std::is_same_v<char_type, char>) {
+      return '\n';
+    } else if constexpr (std::is_same_v<char_type, wchar_t>) {
+      return L'\n';
+    } else if constexpr (std::is_same_v<char_type, char8_t>) {
+      return u8'\n';
+    } else if constexpr (std::is_same_v<char_type, char16_t>) {
+      return u'\n';
+    } else if constexpr (std::is_same_v<char_type, char32_t>) {
+      return U'\n';
+    }
+  }();
+
   static auto OnBufferFull(const uint8_t* buf, size_t sz) -> std::optional<string_view_type> {
     return string_view_type{reinterpret_cast<const char_type*>(buf),
                             reinterpret_cast<const char_type*>(buf + internal::AlignDown<char_type>(sz))};
@@ -503,20 +517,6 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
   }
 
   static auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_read(fd, buf, sz); }
-
-  static consteval auto GetDefaultDelimiter() {
-    if constexpr (std::is_same_v<char_type, char>) {
-      return '\n';
-    } else if constexpr (std::is_same_v<char_type, wchar_t>) {
-      return L'\n';
-    } else if constexpr (std::is_same_v<char_type, char8_t>) {
-      return u8'\n';
-    } else if constexpr (std::is_same_v<char_type, char16_t>) {
-      return u'\n';
-    } else if constexpr (std::is_same_v<char_type, char32_t>) {
-      return U'\n';
-    }
-  }
 
   friend class FileReader::BaseReader;
 };
