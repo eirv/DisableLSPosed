@@ -493,7 +493,7 @@ auto FindFrameworkAPIClassAndClassLoaderByStackTrace(JNIEnv* env,
                       "(Landroid/app/ActivityThread;Landroid/content/pm/ApplicationInfo;Landroid/content/"
                       "res/CompatibilityInfo;Ljava/lang/ClassLoader;ZZZ)V");
   if (loaded_apk_init_mid) {
-    env->NewObjectA(loaded_apk_cls.get(), load_dex_mid, null_args.data());
+    env->NewObjectA(loaded_apk_cls.get(), loaded_apk_init_mid, null_args.data());
     if (auto result = finder()) return result;
   }
 
