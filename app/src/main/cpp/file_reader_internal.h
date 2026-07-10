@@ -4,6 +4,7 @@
 #include <sys/mman.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <concepts>
 #include <cstddef>
@@ -57,7 +58,7 @@ auto raw_munmap(auto&&...) -> int { std::unreachable(); }
 namespace io::internal {
 
 namespace posix {
-[[gnu::always_inline]] inline auto open(const char* path, int flags, mode_t mode = 0) -> int {
+[[gnu::always_inline]] inline auto open(const char* path, int flags, int mode = 0) -> int {
   if constexpr (kHasLSS) {
     return raw_open(path, flags, mode);
   } else {
@@ -67,7 +68,7 @@ namespace posix {
     return -errno;
   }
 }
-[[gnu::always_inline]] inline auto openat(int dirfd, const char* path, int flags, mode_t mode = 0) -> int {
+[[gnu::always_inline]] inline auto openat(int dirfd, const char* path, int flags, int mode = 0) -> int {
   if constexpr (kHasLSS) {
     return raw_openat(dirfd, path, flags, mode);
   } else {
@@ -107,7 +108,7 @@ namespace posix {
 #ifdef __linux__
 [[gnu::always_inline]] inline auto getdents(int fd, dirent* dirp, size_t count) -> ssize_t {
   if constexpr (kHasLSS) {
-    return raw_getdents64(fd, dirp, count);
+    return raw_getdents64(fd, dirp, static_cast<int>(count));
   } else {
     if (auto result = static_cast<ssize_t>(syscall(__NR_getdents64, fd, dirp, count)); result >= 0) [[likely]] {
       return result;
@@ -118,7 +119,7 @@ namespace posix {
 #endif
 [[gnu::always_inline]] inline auto ioctl(int fd, unsigned long op, void* arg) -> int {
   if constexpr (kHasLSS) {
-    return raw_ioctl(fd, op, arg);
+    return raw_ioctl(fd, static_cast<int>(op), arg);
   } else {
     if (auto result = ::ioctl(fd, op, arg); result >= 0) [[likely]] {
       return result;
