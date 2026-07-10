@@ -251,11 +251,9 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
   return result;
 }
 
-SMapsParser::SMapsParser(uint32_t query_flags)
-    : smaps_reader_{"/proc/self/smaps"}, query_flags_{query_flags & ~kVmaQueryParseText} {}
+SMapsParser::SMapsParser(uint32_t query_flags) : smaps_reader_{"/proc/self/smaps"}, query_flags_{query_flags} {}
 
-SMapsParser::SMapsParser(pid_t pid, uint32_t query_flags)
-    : smaps_reader_{}, query_flags_{query_flags & ~kVmaQueryParseText} {
+SMapsParser::SMapsParser(pid_t pid, uint32_t query_flags) : smaps_reader_{}, query_flags_{query_flags} {
   auto name = std::array<char, 32>{};
   std::snprintf(name.data(), name.size(), "/proc/%d/smaps", pid);
   smaps_reader_ = decltype(smaps_reader_){name.data()};
@@ -270,7 +268,7 @@ auto SMapsParser::NextEntry() -> std::optional<SVmaEntry> {
 
   while (auto vma = ParseVmaEntry(smaps_reader_, 0)) {
     if (query_flags_ != 0 && ((query_flags_ & kVmaAllFlags) != vma->flags ||
-                              (query_flags_ & kVmaQueryFileBackedVma && (vma->name.empty() || vma->name[0] != '/')))) {
+                              (query_flags_ & kVmaQueryFileBackedVma && (vma->name.empty() || vma->inode == 0)))) {
       while (auto line = smaps_reader_.NextLine()) {
         if (line->starts_with("VmFlags:")) break;
       }
@@ -280,10 +278,10 @@ auto SMapsParser::NextEntry() -> std::optional<SVmaEntry> {
     SVmaEntry entry{.base = *vma};
     while (auto field = smaps_reader_.NextLine()) {
       if (field->starts_with("VmFlags:")) [[unlikely]] {
-        entry.vm_flags = std::move(*field);
+        entry.vm_flags = *field;
         return entry;
       } else {
-        entry.fields.emplace_back(std::move(*field));
+        entry.fields.emplace_back(*field);
       }
     }
     break;

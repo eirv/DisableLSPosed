@@ -28,7 +28,7 @@ struct StackBuffer {
 
 template <size_t kDefaultBufferSize>
 struct HeapBuffer {
-  template <size_t kBufferSize = kDefaultBufferSize>
+  template <size_t>
   using type = std::unique_ptr<uint8_t[]>;
 
   static constexpr auto size = kDefaultBufferSize;

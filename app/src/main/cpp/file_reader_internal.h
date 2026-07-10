@@ -192,22 +192,16 @@ struct StringView {
 
   consteval StringView() = default;
 
-  consteval StringView(const value_type (&data)[N]) { std::copy_n(data, N - 1, data_); }
+  consteval StringView(const value_type (&data)[N]) { std::copy_n(data, N - 1, data_.data()); }
 
-  consteval auto operator*() const { return operator[](0); }
+  [[nodiscard]] consteval auto operator*() const { return *data_; }
+  [[nodiscard]] consteval auto operator[](size_t index) const { return data_[index]; }
 
-  consteval auto operator[](size_t index) const {
-    static_assert(N > 1);
-    return data_[index];
-  }
+  [[nodiscard]] consteval auto data() const { return data_.data(); }
+  [[nodiscard]] consteval auto size() const { return data_.size(); }
+  [[nodiscard]] consteval auto empty() const { return data_.empty(); }
 
-  [[nodiscard]] consteval auto data() const { return data_; }
-
-  [[nodiscard]] consteval auto size() const { return sizeof(data_); }
-
-  [[nodiscard]] consteval auto empty() const -> bool { return size() == 0; }
-
-  value_type data_[N != 0 ? N - 1 : N]{};
+  std::array<value_type, N != 0 ? N - 1 : N> data_{};
 };
 
 template <class Reader>
