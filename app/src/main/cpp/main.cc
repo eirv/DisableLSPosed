@@ -515,7 +515,7 @@ auto CollectIndirectRefTables() {
 
   for (auto& vma : MapsParser{kVmaRead | kVmaWrite}) {
     if (vma.name != kTargetName) continue;
-    tables.emplace(vma.vma_start, vma.vma_end);
+    tables.emplace(vma.start, vma.end);
   }
   return tables;
 }
@@ -780,7 +780,7 @@ auto JNI_OnLoad(JavaVM* vm, void*) -> jint {
   auto enable_mid = JNI_GetStaticMethodID(env, compiler_cls, "enable", "()V");
   auto stub_method = JNI_ToReflectedMethod(env, compiler_cls, enable_mid, JNI_TRUE);
 
-  VisitJNIGlobalReferences(vm, [&](auto object, auto) {
+  VisitJNIGlobalReferences(vm, [&](auto object, const auto&) {
     auto ref = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(object));
     if (ref == 0) return;
     auto ref_class_addr = *reinterpret_cast<uint32_t*>(ref);

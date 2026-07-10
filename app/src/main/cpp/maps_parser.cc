@@ -1,6 +1,8 @@
 #include "maps_parser.h"
 
+#if __has_include(<linux/fs.h>)
 #include <linux/fs.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -8,8 +10,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-
-#include "linux_syscall_support.h"
 
 #ifndef PROCMAP_QUERY
 #define PROCMAP_QUERY 0xc0686611
@@ -42,6 +42,11 @@ struct procmap_query {
 };
 #endif
 
+#define PROCMAP_QUERY_VMA_FLAGS \
+  (PROCMAP_QUERY_VMA_READABLE | PROCMAP_QUERY_VMA_WRITABLE | PROCMAP_QUERY_VMA_EXECUTABLE | PROCMAP_QUERY_VMA_SHARED)
+#define PROCMAP_QUERY_VALID_FLAGS_MASK \
+  (PROCMAP_QUERY_COVERING_OR_NEXT_VMA | PROCMAP_QUERY_FILE_BACKED_VMA | PROCMAP_QUERY_VMA_FLAGS)
+
 namespace io::proc {
 namespace {
 template <typename T>
@@ -51,7 +56,7 @@ constexpr size_t kMaxPrefixSize = 95;
 auto procmap_query_failed_ = bool{};
 #ifndef __LP64__
 auto name_offset_ = [] -> size_t {
-  auto smaps_rollup = raw_open("/proc/self/smaps_rollup", O_RDONLY | O_CLOEXEC);
+  auto smaps_rollup = internal::posix::open("/proc/self/smaps_rollup", O_RDONLY | O_CLOEXEC);
   if (smaps_rollup < 0) [[unlikely]] {
     return 0;
   }
@@ -60,9 +65,9 @@ auto name_offset_ = [] -> size_t {
 
   ssize_t nread;
   do {
-    nread = raw_read(smaps_rollup, buffer.data(), buffer.size());
+    nread = internal::posix::read(smaps_rollup, buffer.data(), buffer.size());
   } while (nread != -EINTR);
-  raw_close(smaps_rollup);
+  internal::posix::close(smaps_rollup);
 
   if (nread == buffer.size()) [[likely]] {
     if (buffer[kNameOffset<uint64_t>] == '[') [[likely]] {
@@ -152,15 +157,15 @@ auto ParseVmaEntry(FileReader<Buffer>& reader, uint32_t query_flags) -> std::opt
     }
 #endif
 
-    if (query_flags & kVmaQueryFileBackedVma && (name.empty() || name[0] != '/')) [[unlikely]] {
+    if (query_flags & kVmaQueryFileBackedVma && (name.empty() || inode == 0)) [[unlikely]] {
       continue;
     }
 
     return VmaEntry{
-        .vma_start = vma_start,
-        .vma_end = vma_end,
-        .vma_flags = vma_flags,
-        .vma_offset = vma_offset,
+        .start = vma_start,
+        .end = vma_end,
+        .flags = vma_flags,
+        .offset = vma_offset,
         .dev_major = dev_major,
         .dev_minor = dev_minor,
         .inode = inode,
@@ -171,14 +176,27 @@ auto ParseVmaEntry(FileReader<Buffer>& reader, uint32_t query_flags) -> std::opt
 }
 }  // namespace
 
-MapsParser::MapsParser(uint32_t query_flags) : maps_reader_{"/proc/self/maps"} {
+MapsParser::MapsParser(uint32_t query_flags) : maps_reader_{"/proc/self/maps"} { Initialize(query_flags); }
+
+MapsParser::MapsParser(pid_t pid, uint32_t query_flags) : maps_reader_{} {
+  auto name = std::array<char, 32>{};
+  std::snprintf(name.data(), name.size(), "/proc/%d/maps", pid);
+  maps_reader_ = decltype(maps_reader_){name.data()};
+  Initialize(query_flags);
+}
+
+void MapsParser::Initialize(uint32_t query_flags) {
+  if (query_flags & kVmaQueryParseText) {
+    status_ = Status::kParseText;
+  }
+
   auto query = reinterpret_cast<procmap_query*>(query_buffer_.data());
   query->size = sizeof(procmap_query);
-  query->query_flags = query_flags | PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
+  query->query_flags = (query_flags & PROCMAP_QUERY_VALID_FLAGS_MASK) | PROCMAP_QUERY_COVERING_OR_NEXT_VMA;
   query->vma_name_addr = reinterpret_cast<uintptr_t>(name_buffer_.data());
 
-  static_assert(sizeof(name_buffer_) == PATH_MAX);
-  static_assert(sizeof(query_buffer_) == sizeof(procmap_query));
+  static_assert(sizeof(name_buffer_) >= PATH_MAX);
+  static_assert(sizeof(query_buffer_) >= sizeof(procmap_query));
 }
 
 auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
@@ -193,7 +211,7 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
 
     int r;
     do {
-      r = raw_ioctl(maps_reader_.GetFd(), PROCMAP_QUERY, query);
+      r = internal::posix::ioctl(maps_reader_.GetFd(), PROCMAP_QUERY, query);
     } while (r == -EINTR);
 
     if (r == 0) [[likely]] {
@@ -201,10 +219,10 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
       auto name_size = static_cast<size_t>(query->vma_name_size);
       if (name_size) --name_size;
       return VmaEntry{
-          .vma_start = static_cast<uintptr_t>(query->vma_start),
-          .vma_end = static_cast<uintptr_t>(query->vma_end),
-          .vma_flags = static_cast<uint32_t>(query->vma_flags),
-          .vma_offset = query->vma_offset,
+          .start = static_cast<uintptr_t>(query->vma_start),
+          .end = static_cast<uintptr_t>(query->vma_end),
+          .flags = static_cast<uint32_t>(query->vma_flags),
+          .offset = query->vma_offset,
           .dev_major = query->dev_major,
           .dev_minor = query->dev_minor,
           .inode = query->inode,
@@ -234,7 +252,14 @@ auto MapsParser::NextEntry() -> std::optional<VmaEntry> {
 }
 
 SMapsParser::SMapsParser(uint32_t query_flags)
-    : smaps_reader_{"/proc/self/smaps"}, query_flags_{query_flags}, completed_{} {}
+    : smaps_reader_{"/proc/self/smaps"}, query_flags_{query_flags & ~kVmaQueryParseText} {}
+
+SMapsParser::SMapsParser(pid_t pid, uint32_t query_flags)
+    : smaps_reader_{}, query_flags_{query_flags & ~kVmaQueryParseText} {
+  auto name = std::array<char, 32>{};
+  std::snprintf(name.data(), name.size(), "/proc/%d/smaps", pid);
+  smaps_reader_ = decltype(smaps_reader_){name.data()};
+}
 
 auto SMapsParser::NextEntry() -> std::optional<SVmaEntry> {
   if (completed_) [[unlikely]] {
@@ -244,7 +269,7 @@ auto SMapsParser::NextEntry() -> std::optional<SVmaEntry> {
   smaps_reader_.Reduce();
 
   while (auto vma = ParseVmaEntry(smaps_reader_, 0)) {
-    if (query_flags_ != 0 && ((query_flags_ & kVmaAllFlags) != vma->vma_flags ||
+    if (query_flags_ != 0 && ((query_flags_ & kVmaAllFlags) != vma->flags ||
                               (query_flags_ & kVmaQueryFileBackedVma && (vma->name.empty() || vma->name[0] != '/')))) {
       while (auto line = smaps_reader_.NextLine()) {
         if (line->starts_with("VmFlags:")) break;
@@ -278,20 +303,20 @@ auto VmaEntry::get_line(std::span<char> buffer) const -> std::string_view {
     return {};
   }
 
-  auto perms = std::array{(vma_flags & kVmaRead) ? 'r' : '-',
-                          (vma_flags & kVmaWrite) ? 'w' : '-',
-                          (vma_flags & kVmaExec) ? 'x' : '-',
-                          (vma_flags & kVmaShared) ? 's' : 'p'};
-  auto len = snprintf(buffer.data(),
-                      buffer.size(),
-                      "%08lx-%08lx %.4s %08llx %02x:%02x %llu",
-                      static_cast<unsigned long>(vma_start),
-                      static_cast<unsigned long>(vma_end),
-                      perms.data(),
-                      static_cast<unsigned long long>(vma_offset),
-                      dev_major,
-                      dev_minor,
-                      static_cast<unsigned long long>(inode));
+  auto perms = std::array{(flags & kVmaRead) ? 'r' : '-',
+                          (flags & kVmaWrite) ? 'w' : '-',
+                          (flags & kVmaExec) ? 'x' : '-',
+                          (flags & kVmaShared) ? 's' : 'p'};
+  auto len = std::snprintf(buffer.data(),
+                           buffer.size(),
+                           "%08lx-%08lx %.4s %08llx %02x:%02x %llu",
+                           static_cast<unsigned long>(start),
+                           static_cast<unsigned long>(end),
+                           perms.data(),
+                           static_cast<unsigned long long>(offset),
+                           dev_major,
+                           dev_minor,
+                           static_cast<unsigned long long>(inode));
   if (len <= 0) [[unlikely]] {
     return {};
   }

@@ -1,251 +1,15 @@
 #pragma once
 
-#include <dirent.h>
-#include <sys/mman.h>
-
-#include <algorithm>
 #include <array>
-#include <cerrno>
-#include <concepts>
 #include <cstring>
-#include <iterator>
 #include <memory>
 #include <optional>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 
-#include "linux_syscall_support.h"
+#include "file_reader_internal.h"
 
 namespace io {
-namespace internal {
-template <typename T>
-struct is_string_view : std::false_type {};
-
-template <typename CharT, typename Traits>
-struct is_string_view<std::basic_string_view<CharT, Traits>> : std::true_type {};
-
-template <typename T>
-inline constexpr bool is_string_view_v = is_string_view<T>::value;
-
-template <typename T>
-concept IndexableAddressable = requires(T t, std::size_t i) {
-  { &t[i] } -> std::same_as<uint8_t*>;
-};
-
-template <typename T>
-concept BufferPolicy = requires {
-  { T::size } -> std::convertible_to<std::size_t>;
-
-  typename T::template type<T::size>;
-
-  { T::template make_buffer<T::size>() } -> std::same_as<typename T::template type<T::size>>;
-} && T::size > 0 && IndexableAddressable<typename T::template type<T::size>>;
-
-template <typename A, std::integral T>
-static constexpr auto AlignDown(T p) -> T {
-  if constexpr (sizeof(A) == 1) {
-    return p;
-  } else {
-    return p & ~(static_cast<T>(sizeof(A)) - T{1});
-  }
-}
-
-template <typename A, std::integral T>
-static constexpr auto AlignUp(T p) -> T {
-  if constexpr (sizeof(A) == 1) {
-    return p;
-  } else {
-    return AlignDown<A>(p + static_cast<T>(sizeof(A)) - T{1});
-  }
-}
-
-template <typename T = char, size_t N = 0>
-struct FixedString {
-  using value_type = T;
-
-  consteval FixedString() = default;
-
-  consteval FixedString(const value_type (&data)[N]) { std::copy_n(data, N - 1, data_); }
-
-  consteval auto operator*() const { return operator[](0); }
-
-  consteval auto operator[](size_t index) const {
-    static_assert(N > 1);
-    return data_[index];
-  }
-
-  [[nodiscard]] consteval auto data() const { return data_; }
-
-  [[nodiscard]] consteval auto size() const {
-    if constexpr (N == 0) {
-      return 0;
-    } else {
-      return N - 1;
-    }
-  }
-
-  [[nodiscard]] consteval auto empty() const -> bool { return size() == 0; }
-
-  value_type data_[N != 0 ? N - 1 : N]{};
-};
-
-template <class Reader>
-class Iterator {
- public:
-  using iterator_category = std::input_iterator_tag;
-  using value_type = Reader::value_type;
-  using difference_type = std::ptrdiff_t;
-  using reference = value_type&;
-  using const_reference = const value_type&;
-  using pointer = value_type*;
-  using const_pointer = const value_type*;
-
-  Iterator() = default;
-
-  explicit Iterator(Reader* reader) : reader_{reader} { operator++(); }
-
-  auto operator*() const noexcept -> const_reference { return current_; }
-  auto operator*() noexcept -> reference { return current_; }
-  auto operator->() const noexcept -> const_pointer { return &current_; }
-  auto operator->() noexcept -> pointer { return &current_; }
-
-  auto operator++() noexcept -> auto& {
-    if (!reader_) return *this;
-    if (auto ret = reader_->operator++()) [[likely]] {
-      current_ = std::move(*ret);
-    } else {
-      reader_ = nullptr;
-      current_ = {};
-    }
-    return *this;
-  }
-
-  void operator++(int) noexcept { operator++(); }
-
-  auto operator==(const Iterator& other) const noexcept -> bool { return reader_ == other.reader_; }
-
- private:
-  Reader* reader_{};
-  value_type current_{};
-};
-
-template <class Derived, class T, class Buffer>
-class BaseReader {
- public:
-  using value_type = T;
-  using iterator = Iterator<Derived>;
-
-  BaseReader(int fd, bool owned)
-      : fd_{fd}, owned_{owned}, buffer_{Buffer::template make_buffer<kBufferSize + kReservedBytes>()} {}
-
-  BaseReader(BaseReader&& other) noexcept
-      : fd_{std::exchange(other.fd_, -1)},
-        owned_{std::exchange(other.owned_, false)},
-        buf_pos_{other.buf_pos_},
-        buf_end_{other.buf_end_},
-        buffer_{std::move(other.buffer_)} {}
-
-  auto operator=(BaseReader&& other) noexcept -> auto& {
-    if (this != &other) {
-      if (fd_ >= 0 && owned_) raw_close(fd_);
-      fd_ = std::exchange(other.fd_, -1);
-      owned_ = std::exchange(other.owned_, false);
-      buf_pos_ = other.buf_pos_;
-      buf_end_ = other.buf_end_;
-      buffer_ = std::move(other.buffer_);
-    }
-    return *this;
-  }
-
-  BaseReader(const BaseReader&) = delete;
-  void operator=(const BaseReader&) = delete;
-
-  ~BaseReader() {
-    if (fd_ >= 0 && owned_) [[likely]] {
-      raw_close(fd_);
-    }
-  }
-
-  operator bool() const noexcept { return IsValid(); }
-
-  auto operator++(int) { return static_cast<Derived*>(this)->operator++(); }
-
-  [[nodiscard]] auto IsValid() const noexcept { return fd_ >= 0; }
-  [[nodiscard]] auto GetFd() const noexcept { return fd_; }
-
-  void Reduce() {
-    auto rem = buf_end_ - buf_pos_;
-    memmove(&buffer_[0], &buffer_[buf_pos_], rem);
-    buf_end_ = rem;
-    buf_pos_ = 0;
-  }
-
-  [[nodiscard]] auto begin() { return iterator{static_cast<Derived*>(this)}; }
-  [[nodiscard]] auto end() { return iterator{}; }
-
- protected:
-  auto NextImpl(auto&& parse_func) -> std::optional<value_type> {
-    if (eof_ || fd_ < 0) [[unlikely]] {
-      return {};
-    }
-
-    for (;;) {
-      auto available = buf_end_ - buf_pos_;
-
-      if (auto res = parse_func(&buffer_[buf_pos_], available)) [[likely]] {
-        auto [val, consumed] = *res;
-        buf_pos_ += consumed;
-        if (buf_pos_ == buf_end_) buf_pos_ = buf_end_ = 0;
-        return val;
-      }
-
-      if (buf_pos_ > 0 && buf_pos_ < buf_end_) [[likely]] {
-        Reduce();
-      } else if (buf_pos_ == buf_end_) {
-        buf_pos_ = buf_end_ = 0;
-      }
-
-      auto space = kBufferSize - buf_end_;
-      if (space == 0) [[unlikely]] {
-        return Derived::OnBufferFull(&buffer_[0], std::exchange(buf_end_, 0));
-      }
-
-      ssize_t n;
-      do {
-        n = Derived::ReadFromFD(fd_, &buffer_[buf_end_], space);
-      } while (n == -EINTR);
-
-      if (n <= 0) [[unlikely]] {
-        eof_ = true;
-        return Derived::OnEOF(&buffer_[0], buf_end_);
-      }
-
-      buf_end_ += static_cast<size_t>(n);
-    }
-  }
-
- private:
-  static constexpr size_t kBufferSize = Buffer::size;
-
-  // String is not null-terminated by default.
-  // One extra byte is reserved for user to add null terminator if required.
-  static constexpr auto kReservedBytes = [] consteval -> size_t {
-    if constexpr (is_string_view_v<value_type>) {
-      return AlignUp<void*>(kBufferSize + sizeof(typename value_type::value_type)) - kBufferSize;
-    } else {
-      return 0;
-    }
-  }();
-
-  int fd_;
-  bool owned_;
-  bool eof_{};
-  size_t buf_pos_{};
-  size_t buf_end_{};
-  Buffer::template type<kBufferSize + kReservedBytes> buffer_;
-};
-}  // namespace internal
 
 template <size_t kDefaultBufferSize>
 struct StackBuffer {
@@ -297,14 +61,15 @@ struct MMapBuffer {
 
   auto operator=(MMapBuffer&& other) noexcept -> auto& {
     if (this != &other) {
-      if (base_) raw_munmap(base_, kDefaultBufferSize);
+      if (base_) internal::posix::munmap(base_, kDefaultBufferSize);
       base_ = std::exchange(other.base_, nullptr);
     }
     return *this;
   }
 
   MMapBuffer() {
-    auto base = raw_mmap(nullptr, kDefaultBufferSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    auto base =
+        internal::posix::mmap(nullptr, kDefaultBufferSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (reinterpret_cast<uintptr_t>(base) < -4095UL) [[likely]] {
       base_ = static_cast<uint8_t*>(base);
     }
@@ -312,7 +77,7 @@ struct MMapBuffer {
 
   ~MMapBuffer() {
     if (base_) [[likely]] {
-      raw_munmap(base_, kDefaultBufferSize);
+      internal::posix::munmap(base_, kDefaultBufferSize);
     }
   }
 
@@ -329,24 +94,24 @@ using DefaultMMapBuffer = MMapBuffer<64 * 1024>;
 using DefaultBuffer = DefaultStackBuffer;
 
 struct UTF8 {
-  static constexpr auto LF = internal::FixedString<char>{};
-  static constexpr auto CR = internal::FixedString{"\r"};
-  static constexpr auto CRLF = internal::FixedString{"\r\n"};
-  static constexpr auto SPACE = internal::FixedString{" "};
+  static constexpr auto LF = internal::StringView<char>{};
+  static constexpr auto CR = internal::StringView{"\r"};
+  static constexpr auto CRLF = internal::StringView{"\r\n"};
+  static constexpr auto SPACE = internal::StringView{" "};
 };
 
 struct UTF16 {
-  static constexpr auto LF = internal::FixedString<char16_t>{};
-  static constexpr auto CR = internal::FixedString{u"\r"};
-  static constexpr auto CRLF = internal::FixedString{u"\r\n"};
-  static constexpr auto SPACE = internal::FixedString{u" "};
+  static constexpr auto LF = internal::StringView<char16_t>{};
+  static constexpr auto CR = internal::StringView{u"\r"};
+  static constexpr auto CRLF = internal::StringView{u"\r\n"};
+  static constexpr auto SPACE = internal::StringView{u" "};
 };
 
 struct UTF32 {
-  static constexpr auto LF = internal::FixedString<char32_t>{};
-  static constexpr auto CR = internal::FixedString{U"\r"};
-  static constexpr auto CRLF = internal::FixedString{U"\r\n"};
-  static constexpr auto SPACE = internal::FixedString{U" "};
+  static constexpr auto LF = internal::StringView<char32_t>{};
+  static constexpr auto CR = internal::StringView{U"\r"};
+  static constexpr auto CRLF = internal::StringView{U"\r\n"};
+  static constexpr auto SPACE = internal::StringView{U" "};
 };
 
 static constexpr auto UTF8 = UTF8::LF;
@@ -398,7 +163,7 @@ static constexpr auto UTF32 = UTF32::LF;
  * for (auto line : FileReader<DefaultStackBuffer, UTF8::CR>{"..."}) {}
  *
  * // Custom separator (e.g., Space)
- * for (auto line : FileReader<DefaultStackBuffer, UTF8::SPACE>{"..."}) {}
+ * for (auto line : FileReader<DefaultStackBuffer, " ">{"..."}) {}  // Equivalent to UTF8::SPACE
  * @endcode
  *
  * @example **Type Deduction via Literals**
@@ -425,7 +190,7 @@ static constexpr auto UTF32 = UTF32::LF;
  * the view itself outside the loop iteration, as the buffer content changes or
  * gets overwritten as reading progresses.
  */
-template <internal::BufferPolicy Buffer = DefaultBuffer, internal::FixedString kDelimiter = UTF8::LF>
+template <internal::BufferPolicy Buffer = DefaultBuffer, internal::StringView kDelimiter = UTF8::LF>
   requires(Buffer::size % sizeof(typename decltype(kDelimiter)::value_type) == 0)
 class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
                                                std::basic_string_view<typename decltype(kDelimiter)::value_type>,
@@ -434,19 +199,22 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
   using char_type = decltype(kDelimiter)::value_type;
   using string_view_type = std::basic_string_view<char_type>;
 
-  explicit FileReader(int fd) : FileReader::BaseReader{fd, false} {}
+  using FileReader::BaseReader::BaseReader;
 
-  explicit FileReader(const char* pathname) : FileReader::BaseReader{raw_open(pathname, O_RDONLY | O_CLOEXEC), true} {}
+  explicit FileReader(int fd) : FileReader::BaseReader{fd >= 0 ? fd : -EBADF, false} {}
+
+  explicit FileReader(const char* pathname)
+      : FileReader::BaseReader{internal::posix::open(pathname, O_RDONLY | O_CLOEXEC), true} {}
 
   FileReader(int dirfd, const char* pathname)
-      : FileReader::BaseReader{raw_openat(dirfd, pathname, O_RDONLY | O_CLOEXEC), true} {}
+      : FileReader::BaseReader{internal::posix::openat(dirfd, pathname, O_RDONLY | O_CLOEXEC), true} {}
 
   auto operator++() { return NextLine(); }
 
-  auto NextLine() -> std::optional<string_view_type> {
+  [[nodiscard]] auto NextLine() -> std::optional<string_view_type> {
     return this->NextImpl([] [[gnu::always_inline]] (
                               const uint8_t* buf,
-                              size_t available) -> std::optional<std::pair<string_view_type, size_t>> {
+                              size_t available) static -> std::optional<std::pair<string_view_type, size_t>> {
       if (!available) [[unlikely]] {
         return {};
       }
@@ -474,9 +242,9 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
           next = reinterpret_cast<const char_type*>(buf) + pos;
         }
       } else if constexpr (kDelimiter.empty()) {
-        next = memchr(buf, kDefaultDelimiter, available);
+        next = std::memchr(buf, kDefaultDelimiter, available);
       } else if constexpr (kDelimiter.size() == 1) {
-        next = memchr(buf, *kDelimiter, available);
+        next = std::memchr(buf, *kDelimiter, available);
       } else {
         next = memmem(buf, available, kDelimiter.data(), kDelimiter.size());
       }
@@ -516,7 +284,7 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
     return string_view_type{reinterpret_cast<const char_type*>(buf), reinterpret_cast<const char_type*>(buf + sz)};
   }
 
-  static auto ReadFromFD(int fd, void* buf, size_t sz) { return raw_read(fd, buf, sz); }
+  static auto ReadFromFD(int fd, void* buf, size_t sz) { return internal::posix::read(fd, buf, sz); }
 
   friend class FileReader::BaseReader;
 };
@@ -533,14 +301,14 @@ enum class DirEntryType : uint8_t {
 };
 
 struct DirEntry {
-  kernel_dirent64* entry;
+  internal::posix::dirent* entry;
 
   [[nodiscard]] auto inode() const { return entry->d_ino; }
-  [[nodiscard]] auto offset() const { return entry->d_off; }
   [[nodiscard]] auto type() const { return static_cast<DirEntryType>(entry->d_type); }
 
   [[nodiscard]] auto name() const {
-    return std::string_view{entry->d_name, strnlen(entry->d_name, entry->d_reclen - offsetof(kernel_dirent64, d_name))};
+    return std::string_view{entry->d_name,
+                            strnlen(entry->d_name, entry->d_reclen - offsetof(internal::posix::dirent, d_name))};
   }
 
   [[nodiscard]] auto is_unknown() const { return type() == DirEntryType::kUnknown; }
@@ -553,27 +321,141 @@ struct DirEntry {
   [[nodiscard]] auto is_socket() const { return type() == DirEntryType::kSocket; }
 };
 
+class PosixDirReader {
+ public:
+  using value_type = DirEntry;
+  using iterator = internal::Iterator<const PosixDirReader>;
+
+  explicit PosixDirReader(DIR* dir) : dir_{dir}, owned_{false} {}
+
+  explicit PosixDirReader(int fd) : owned_{true} {
+    if (fd < 0) {
+      error_ = EBADF;
+      return;
+    }
+#ifdef __APPLE__
+    if (__builtin_available(macOS 26.4, *)) {
+      dir_ = fdopendir(fd);
+      fd_owned_ = false;
+    } else {
+      dir_ = fdopendir(internal::posix::dup(fd));
+    }
+#else
+    dir_ = fdopendir(internal::posix::dup(fd));
+#endif
+    if (dir_ == nullptr) [[unlikely]] {
+      error_ = errno;
+    }
+  }
+
+  explicit PosixDirReader(const char* pathname) : dir_{opendir(pathname)}, owned_{true} {
+    if (dir_ == nullptr) [[unlikely]] {
+      error_ = errno;
+    }
+  }
+
+  PosixDirReader(int dirfd, const char* pathname) : owned_{true} {
+    if (auto fd = internal::posix::openat(dirfd, pathname, O_DIRECTORY | O_CLOEXEC); fd >= 0) [[likely]] {
+      dir_ = fdopendir(fd);
+      if (dir_ == nullptr) [[unlikely]] {
+        error_ = errno;
+      }
+    } else {
+      error_ = -fd;
+    }
+  }
+
+  PosixDirReader(PosixDirReader&& other) noexcept
+      : dir_{std::exchange(other.dir_, nullptr)},
+        error_{std::exchange(other.error_, 0)},
+        owned_{other.owned_},
+        fd_owned_{other.fd_owned_} {}
+
+  auto operator=(PosixDirReader&& other) noexcept -> auto& {
+    if (this != &other) {
+      dir_ = std::exchange(other.dir_, nullptr);
+      error_ = std::exchange(other.error_, 0);
+      owned_ = other.owned_;
+      fd_owned_ = other.fd_owned_;
+    }
+    return *this;
+  }
+
+  PosixDirReader(const PosixDirReader&) = delete;
+  void operator=(const PosixDirReader&) = delete;
+
+  [[nodiscard]] auto NextEntry() const -> std::optional<DirEntry> {
+    if (auto entry = readdir(dir_)) [[likely]] {
+      return DirEntry{reinterpret_cast<internal::posix::dirent*>(entry)};
+    }
+    return {};
+  }
+
+  [[nodiscard]] auto IsValid() const noexcept { return dir_ != nullptr; }
+  [[nodiscard]] auto GetFd() const noexcept { return dirfd(dir_); }
+  [[nodiscard]] auto GetError() const noexcept { return error_; }
+
+  [[nodiscard]] auto begin() const { return iterator{this}; }
+  [[nodiscard]] auto end() const { return iterator{}; }
+
+  operator bool() const noexcept { return IsValid(); }
+
+  auto operator++() const { return NextEntry(); }
+  auto operator++(int) const { return operator++(); }
+
+  ~PosixDirReader() {
+    if (!dir_) [[unlikely]] {
+      return;
+    }
+#ifdef __APPLE__
+    if (__builtin_available(macOS 26.4, *)) {
+      if (fd_owned_) [[likely]] {
+        closedir(dir_);
+      } else if (owned_) [[likely]] {
+        fdclosedir(dir_);
+      }
+    } else {
+      closedir(dir_);
+    }
+#else
+    if (owned_) [[likely]] {
+      closedir(dir_);
+    }
+#endif
+  }
+
+ private:
+  DIR* dir_{};
+  int error_{};
+  bool owned_;
+  bool fd_owned_{true};
+};
+
+#ifdef __linux__
 template <internal::BufferPolicy Buffer = DefaultBuffer>
-  requires(Buffer::size > offsetof(kernel_dirent64, d_name) && Buffer::size % sizeof(uint64_t) == 0)
+  requires(Buffer::size > offsetof(internal::posix::dirent, d_name) && Buffer::size % sizeof(uint64_t) == 0)
 class DirReader : public internal::BaseReader<DirReader<Buffer>, DirEntry, Buffer> {
  public:
-  explicit DirReader(int fd) : DirReader::BaseReader{fd, false} {}
+  using DirReader::BaseReader::BaseReader;
 
-  explicit DirReader(const char* pathname) : DirReader::BaseReader{raw_open(pathname, O_DIRECTORY | O_CLOEXEC), true} {}
+  explicit DirReader(int fd) : DirReader::BaseReader{fd >= 0 ? fd : -EBADF, false} {}
+
+  explicit DirReader(const char* pathname)
+      : DirReader::BaseReader{internal::posix::open(pathname, O_DIRECTORY | O_CLOEXEC), true} {}
 
   DirReader(int dirfd, const char* pathname)
-      : DirReader::BaseReader{raw_openat(dirfd, pathname, O_DIRECTORY | O_CLOEXEC), true} {}
+      : DirReader::BaseReader{internal::posix::openat(dirfd, pathname, O_DIRECTORY | O_CLOEXEC), true} {}
 
   auto operator++() { return NextEntry(); }
 
   auto NextEntry() -> std::optional<DirEntry> {
     return this->NextImpl(
         [] [[gnu::always_inline]] (uint8_t* buf, size_t available) -> std::optional<std::pair<DirEntry, size_t>> {
-          if (available < offsetof(kernel_dirent64, d_name)) [[unlikely]] {
+          if (available < offsetof(internal::posix::dirent, d_name)) [[unlikely]] {
             return {};
           }
 
-          auto dir = reinterpret_cast<kernel_dirent64*>(buf);
+          auto dir = reinterpret_cast<internal::posix::dirent*>(buf);
           if (available < dir->d_reclen) [[unlikely]] {
             return {};
           }
@@ -588,9 +470,12 @@ class DirReader : public internal::BaseReader<DirReader<Buffer>, DirEntry, Buffe
   static auto OnEOF(const uint8_t*, size_t) -> std::optional<DirEntry> { return {}; }
 
   static auto ReadFromFD(int fd, void* buf, size_t sz) {
-    return raw_getdents64(fd, static_cast<kernel_dirent64*>(buf), static_cast<int>(sz));
+    return internal::posix::getdents(fd, static_cast<internal::posix::dirent*>(buf), sz);
   }
 
   friend class DirReader::BaseReader;
 };
+#else
+using DirReader = PosixDirReader;
+#endif
 }  // namespace io

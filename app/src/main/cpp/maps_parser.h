@@ -17,17 +17,24 @@ static constexpr uint32_t kVmaShared = 0x08;
 static constexpr uint32_t kVmaAllFlags = kVmaRead | kVmaWrite | kVmaExec | kVmaShared;
 
 static constexpr uint32_t kVmaQueryFileBackedVma = 0x20;
+static constexpr uint32_t kVmaQueryParseText = 0x00010000;
 static constexpr uint32_t kVmaAllQueryFlags = kVmaAllFlags | kVmaQueryFileBackedVma;
 
 struct VmaEntry {
-  uintptr_t vma_start;
-  uintptr_t vma_end;
-  uint32_t vma_flags;
-  uint64_t vma_offset;
+  uintptr_t start;
+  uintptr_t end;
+  uint32_t flags;
+  uint64_t offset;
   uint32_t dev_major;
   uint32_t dev_minor;
   uint64_t inode;
   std::string_view name;
+
+  [[nodiscard]] auto size() const -> size_t { return end - start; }
+
+  [[nodiscard]] auto contains(uintptr_t addr) const -> bool { return start <= addr && addr < end; }
+
+  [[nodiscard]] auto contains(const void* addr) const -> bool { return contains(reinterpret_cast<uintptr_t>(addr)); }
 
   [[nodiscard]] auto get_line() const -> std::string;
 
@@ -40,6 +47,8 @@ class MapsParser {
   using iterator = internal::Iterator<MapsParser>;
 
   explicit MapsParser(uint32_t query_flags = 0);
+
+  MapsParser(pid_t pid, uint32_t query_flags);
 
   MapsParser(MapsParser&& other) noexcept
       : maps_reader_{std::move(other.maps_reader_)},
@@ -67,7 +76,7 @@ class MapsParser {
   operator bool() const noexcept { return IsValid(); }
 
   [[nodiscard]] auto begin() { return iterator{this}; }
-  [[nodiscard]] auto end() { return iterator{}; }
+  [[nodiscard]] auto end() const { return iterator{}; }
 
   auto NextEntry() -> std::optional<VmaEntry>;
 
@@ -77,6 +86,8 @@ class MapsParser {
     kParseText,
     kCompleted,
   };
+
+  void Initialize(uint32_t query_flags);
 
   FileReader<DefaultHeapBuffer> maps_reader_;
   Status status_{Status::kTryIoctl};
@@ -108,6 +119,8 @@ class SMapsParser {
 
   explicit SMapsParser(uint32_t query_flags = 0);
 
+  SMapsParser(pid_t pid, uint32_t query_flags);
+
   SMapsParser(SMapsParser&& other) noexcept
       : smaps_reader_{std::move(other.smaps_reader_)}, query_flags_{other.query_flags_} {}
 
@@ -126,6 +139,7 @@ class SMapsParser {
   auto operator++(int) { return operator++(); }
 
   [[nodiscard]] auto IsValid() const noexcept { return smaps_reader_.IsValid(); }
+  [[nodiscard]] auto GetError() const noexcept { return smaps_reader_.GetError(); }
   operator bool() const noexcept { return IsValid(); }
 
   [[nodiscard]] auto begin() { return iterator{this}; }
@@ -136,64 +150,64 @@ class SMapsParser {
  private:
   FileReader<DefaultHeapBuffer> smaps_reader_;
   uint32_t query_flags_;
-  bool completed_;
+  bool completed_{};
 };
 
-struct Field {
-  static constexpr std::string_view kSize = "Size";
-  static constexpr std::string_view kKernelPageSize = "KernelPageSize";
-  static constexpr std::string_view kMMUPageSize = "MMUPageSize";
-  static constexpr std::string_view kRss = "Rss";
-  static constexpr std::string_view kPss = "Pss";
-  static constexpr std::string_view kPssDirty = "Pss_Dirty";
-  static constexpr std::string_view kSharedClean = "Shared_Clean";
-  static constexpr std::string_view kSharedDirty = "Shared_Dirty";
-  static constexpr std::string_view kPrivateClean = "Private_Clean";
-  static constexpr std::string_view kPrivateDirty = "Private_Dirty";
-  static constexpr std::string_view kReferenced = "Referenced";
-  static constexpr std::string_view kAnonymous = "Anonymous";
-  static constexpr std::string_view kLazyFree = "LazyFree";
-  static constexpr std::string_view kAnonHugePages = "AnonHugePages";
-  static constexpr std::string_view kShmemPmdMapped = "ShmemPmdMapped";
-  static constexpr std::string_view kFilePmdMapped = "FilePmdMapped";
-  static constexpr std::string_view kSharedHugetlb = "Shared_Hugetlb";
-  static constexpr std::string_view kPrivateHugetlb = "Private_Hugetlb";
-  static constexpr std::string_view kSwap = "Swap";
-  static constexpr std::string_view kSwapPss = "SwapPss";
-  static constexpr std::string_view kLocked = "Locked";
-  static constexpr std::string_view kTHPeligible = "THPeligible";
-};
+namespace field {
+static constexpr std::string_view kSize = "Size";
+static constexpr std::string_view kKernelPageSize = "KernelPageSize";
+static constexpr std::string_view kMMUPageSize = "MMUPageSize";
+static constexpr std::string_view kRss = "Rss";
+static constexpr std::string_view kPss = "Pss";
+static constexpr std::string_view kPssDirty = "Pss_Dirty";
+static constexpr std::string_view kSharedClean = "Shared_Clean";
+static constexpr std::string_view kSharedDirty = "Shared_Dirty";
+static constexpr std::string_view kPrivateClean = "Private_Clean";
+static constexpr std::string_view kPrivateDirty = "Private_Dirty";
+static constexpr std::string_view kReferenced = "Referenced";
+static constexpr std::string_view kAnonymous = "Anonymous";
+static constexpr std::string_view kLazyFree = "LazyFree";
+static constexpr std::string_view kAnonHugePages = "AnonHugePages";
+static constexpr std::string_view kShmemPmdMapped = "ShmemPmdMapped";
+static constexpr std::string_view kFilePmdMapped = "FilePmdMapped";
+static constexpr std::string_view kSharedHugetlb = "Shared_Hugetlb";
+static constexpr std::string_view kPrivateHugetlb = "Private_Hugetlb";
+static constexpr std::string_view kSwap = "Swap";
+static constexpr std::string_view kSwapPss = "SwapPss";
+static constexpr std::string_view kLocked = "Locked";
+static constexpr std::string_view kTHPeligible = "THPeligible";
+}  // namespace field
 
-struct VmFlag {
-  static constexpr std::string_view kRead = "rd";
-  static constexpr std::string_view kWrite = "wr";
-  static constexpr std::string_view kExec = "ex";
-  static constexpr std::string_view kShared = "sh";
-  static constexpr std::string_view kMayRead = "mr";
-  static constexpr std::string_view kMayWrite = "mw";
-  static constexpr std::string_view kMayExec = "me";
-  static constexpr std::string_view kMayShare = "ms";
-  static constexpr std::string_view kGrowsDown = "gd";
-  static constexpr std::string_view kPfnMap = "pf";
-  static constexpr std::string_view kLocked = "lo";
-  static constexpr std::string_view kIO = "io";
-  static constexpr std::string_view kSeqRead = "sr";
-  static constexpr std::string_view kRandRead = "rr";
-  static constexpr std::string_view kDontCopy = "dc";
-  static constexpr std::string_view kDontExpand = "de";
-  static constexpr std::string_view kLockOnFault = "lf";
-  static constexpr std::string_view kAccount = "ac";
-  static constexpr std::string_view kNoReserve = "nr";
-  static constexpr std::string_view kHugeTlb = "ht";
-  static constexpr std::string_view kSync = "sf";
-  static constexpr std::string_view kWipeOnFork = "wf";
-  static constexpr std::string_view kDontDump = "dd";
-  static constexpr std::string_view kMixedMap = "mm";
-  static constexpr std::string_view kHugePage = "hg";
-  static constexpr std::string_view kNoHugePage = "nh";
-  static constexpr std::string_view kMergeable = "mg";
-  static constexpr std::string_view kUffdMissing = "um";
-  static constexpr std::string_view kUffdWp = "uw";
-  static constexpr std::string_view kSealed = "sl";
-};
+namespace vm_flag {
+static constexpr std::string_view kRead = "rd";
+static constexpr std::string_view kWrite = "wr";
+static constexpr std::string_view kExec = "ex";
+static constexpr std::string_view kShared = "sh";
+static constexpr std::string_view kMayRead = "mr";
+static constexpr std::string_view kMayWrite = "mw";
+static constexpr std::string_view kMayExec = "me";
+static constexpr std::string_view kMayShare = "ms";
+static constexpr std::string_view kGrowsDown = "gd";
+static constexpr std::string_view kPfnMap = "pf";
+static constexpr std::string_view kLocked = "lo";
+static constexpr std::string_view kIO = "io";
+static constexpr std::string_view kSeqRead = "sr";
+static constexpr std::string_view kRandRead = "rr";
+static constexpr std::string_view kDontCopy = "dc";
+static constexpr std::string_view kDontExpand = "de";
+static constexpr std::string_view kLockOnFault = "lf";
+static constexpr std::string_view kAccount = "ac";
+static constexpr std::string_view kNoReserve = "nr";
+static constexpr std::string_view kHugeTlb = "ht";
+static constexpr std::string_view kSync = "sf";
+static constexpr std::string_view kWipeOnFork = "wf";
+static constexpr std::string_view kDontDump = "dd";
+static constexpr std::string_view kMixedMap = "mm";
+static constexpr std::string_view kHugePage = "hg";
+static constexpr std::string_view kNoHugePage = "nh";
+static constexpr std::string_view kMergeable = "mg";
+static constexpr std::string_view kUffdMissing = "um";
+static constexpr std::string_view kUffdWp = "uw";
+static constexpr std::string_view kSealed = "sl";
+}  // namespace vm_flag
 }  // namespace io::proc
