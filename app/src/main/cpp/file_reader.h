@@ -430,7 +430,9 @@ class PosixDirReader {
   bool fd_owned_{true};
 };
 
-#ifdef __linux__
+#ifdef __APPLE__
+using DirReader = PosixDirReader;
+#else
 template <internal::BufferPolicy Buffer = DefaultBuffer>
   requires(Buffer::size > offsetof(internal::posix::dirent, d_name) && Buffer::size % sizeof(uint64_t) == 0)
 class DirReader : public internal::BaseReader<DirReader<Buffer>, DirEntry, Buffer> {
@@ -474,7 +476,5 @@ class DirReader : public internal::BaseReader<DirReader<Buffer>, DirEntry, Buffe
 
   friend class DirReader::BaseReader;
 };
-#else
-using DirReader = PosixDirReader;
 #endif
 }  // namespace io
