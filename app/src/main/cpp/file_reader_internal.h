@@ -303,7 +303,8 @@ class BaseReader {
   BaseReader(int fd, bool owned)
       : fd_{fd}, owned_{owned}, buffer_{Buffer::template make_buffer<kBufferSize + kReservedBytes>()} {}
 
-  auto NextImpl(auto&& parse_func) -> std::optional<value_type> {
+  template <auto kParseFn>
+  auto NextImpl() -> std::optional<value_type> {
     if (eof_ || fd_ < 0) [[unlikely]] {
       return {};
     }
@@ -311,7 +312,7 @@ class BaseReader {
     for (;;) {
       auto available = buf_end_ - buf_pos_;
 
-      if (auto res = parse_func(&buffer_[buf_pos_], available)) [[likely]] {
+      if (auto res = kParseFn(&buffer_[buf_pos_], available)) [[likely]] {
         auto [val, consumed] = *res;
         buf_pos_ += consumed;
         if (buf_pos_ == buf_end_) buf_pos_ = buf_end_ = 0;

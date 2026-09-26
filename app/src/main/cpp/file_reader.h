@@ -212,9 +212,8 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
   auto operator++() { return NextLine(); }
 
   [[nodiscard]] auto NextLine() -> std::optional<string_view_type> {
-    return this->NextImpl([] [[gnu::always_inline]] (
-                              const uint8_t* buf,
-                              size_t available) static -> std::optional<std::pair<string_view_type, size_t>> {
+    return this->template NextImpl<[] [[gnu::always_inline]] (const uint8_t* buf, size_t available) static
+                                       -> std::optional<std::pair<string_view_type, size_t>> {
       if (!available) [[unlikely]] {
         return {};
       }
@@ -255,7 +254,7 @@ class FileReader : public internal::BaseReader<FileReader<Buffer, kDelimiter>,
                          (len + std::max<size_t>(kDelimiter.size(), 1)) * sizeof(char_type)};
       }
       return {};
-    });
+    }>();
   }
 
  private:
@@ -448,20 +447,20 @@ class DirReader : public internal::BaseReader<DirReader<Buffer>, DirEntry, Buffe
 
   auto operator++() { return NextEntry(); }
 
-  auto NextEntry() -> std::optional<DirEntry> {
-    return this->NextImpl(
-        [] [[gnu::always_inline]] (uint8_t* buf, size_t available) -> std::optional<std::pair<DirEntry, size_t>> {
-          if (available < offsetof(internal::posix::dirent, d_name)) [[unlikely]] {
-            return {};
-          }
+  [[nodiscard]] auto NextEntry() -> std::optional<DirEntry> {
+    return this->template NextImpl<[] [[gnu::always_inline]] (uint8_t* buf, size_t available) static
+                                       -> std::optional<std::pair<DirEntry, size_t>> {
+      if (available < offsetof(internal::posix::dirent, d_name)) [[unlikely]] {
+        return {};
+      }
 
-          auto dir = reinterpret_cast<internal::posix::dirent*>(buf);
-          if (available < dir->d_reclen) [[unlikely]] {
-            return {};
-          }
+      auto dir = reinterpret_cast<internal::posix::dirent*>(buf);
+      if (available < dir->d_reclen) [[unlikely]] {
+        return {};
+      }
 
-          return std::pair{DirEntry{dir}, dir->d_reclen};
-        });
+      return std::pair{DirEntry{dir}, dir->d_reclen};
+    }>();
   }
 
  private:
