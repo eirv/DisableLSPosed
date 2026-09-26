@@ -48,6 +48,9 @@ struct procmap_query {
   (PROCMAP_QUERY_COVERING_OR_NEXT_VMA | PROCMAP_QUERY_FILE_BACKED_VMA | PROCMAP_QUERY_VMA_FLAGS)
 
 namespace io::proc {
+
+using namespace std::string_view_literals;
+
 namespace {
 template <typename T>
 constexpr size_t kNameOffset = 25 + sizeof(T) * 6;
@@ -270,14 +273,14 @@ auto SMapsParser::NextEntry() -> std::optional<SVmaEntry> {
     if (query_flags_ != 0 && ((query_flags_ & kVmaAllFlags) != vma->flags ||
                               (query_flags_ & kVmaQueryFileBackedVma && (vma->name.empty() || vma->inode == 0)))) {
       while (auto line = smaps_reader_.NextLine()) {
-        if (line->starts_with("VmFlags:")) break;
+        if (line->starts_with("VmFlags:"sv)) break;
       }
       smaps_reader_.Reduce();
       continue;
     }
     SVmaEntry entry{.base = *vma};
     while (auto field = smaps_reader_.NextLine()) {
-      if (field->starts_with("VmFlags:")) [[unlikely]] {
+      if (field->starts_with("VmFlags:"sv)) [[unlikely]] {
         entry.vm_flags = *field;
         return entry;
       } else {
@@ -386,7 +389,7 @@ auto SVmaEntry::get_field_string(std::string_view name) const -> std::string_vie
 }
 
 auto SVmaEntry::has_vm_flag(std::string_view vm_flag) const -> bool {
-  if (vm_flags.size() <= 9 /* "VmFlags: " */) [[unlikely]] {
+  if (vm_flags.size() <= "VmFlags: "sv.size()) [[unlikely]] {
     return false;
   }
   if (auto pos = vm_flags.find(vm_flag, 9); pos != std::string_view::npos) {
